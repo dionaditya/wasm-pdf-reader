@@ -32,6 +32,7 @@ struct Obj {
     std::vector<ObjP> arr;
     std::vector<std::pair<std::string, ObjP>> dict;
     int ref = 0, gen = 0;                  // O_REF
+    int objNum = 0, genNum = 0;            // own object number when parsed indirect
     bool isStream = false;
     std::string raw;                       // stream bytes, still encoded
 
@@ -101,9 +102,17 @@ struct Document {
     std::vector<std::string> warnings;
     std::string error;
     bool  loaded = false;
+
+    // Standard security handler (RC4 / AES-128). Empty user password only.
+    bool  encrypted = false;
+    bool  aesStreams = false;
+    std::string encKey;                    // file key
+    int   encN = 0;                        // key length in bytes
+    std::string decryptStream(const ObjP& stm) const;
     int   depth = 0;
 
     bool load(const uint8_t* data, size_t len);
+    bool setupEncryption(const ObjP& enc);
     ObjP resolve(const ObjP& o);
     ObjP obj(int num);
     const std::string& warn(const std::string& w) {

@@ -1,4 +1,10 @@
 #include "pdfdoc.hpp"
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_NO_STDIO
+#include "stb_image.h"
+#include "pdfcrypto.hpp"
 #include "pdf_widths.h"   // standard-14 AFM advances for fonts without /Widths
 
 #include <algorithm>
@@ -272,6 +278,13 @@ bool Document::load(const uint8_t* data, size_t len) {
     }
     if (!trailer) { error = "no trailer"; return false; }
 
+    if (ObjP enc = resolve(trailer->get("Encrypt"))) {
+        if (!setupEncryption(enc)) {
+            error = "encrypted PDF: password or unsupported handler";
+            return false;
+        }
+    }
+
     ObjP root = resolve(trailer->get("Root"));
     if (!root) { error = "no document catalog"; return false; }
     ObjP pagesRoot = resolve(root->get("Pages"));
@@ -455,6 +468,8 @@ ObjP Document::parseObjectAt(long off, bool* ok) {
     if (!lex.readNumber(n, ia) || !lex.readNumber(g, ib)) return nullptr;
     if (!lex.eatWord("obj")) return nullptr;
     ObjP o = lex.parse();
+    o->objNum = (int)n;
+    o->genNum = (int)g;
     lex.skipWS();
     if (o->t == O_DICT && lex.wordIs("stream")) {
         lex.p += 6;
@@ -821,9 +836,92 @@ static std::string applyPredictor(const std::string& in, int predictor, int colo
     return out;
 }
 
+
+// ── Standard security handler ───────────────────────────────────────────────
+static const unsigned char kPad[32] = {
+    0x28,0xBF,0x4E,0x5E,0x4E,0x75,0x8A,0x41,0x64,0x00,0x4E,0x56,0xFF,0xFA,0x01,0x08,
+    0x2E,0x2E,0x00,0xB6,0xD0,0x68,0x3E,0x80,0x2F,0x0C,0xA9,0xFE,0x64,0x53,0x69,0x7A };
+
+std::string Document::decryptStream(const ObjP& stm) const
+{
+    if (!encrypted || !stm) return stm ? stm->raw : std::string();
+    std::string k = encKey;
+    k.push_back((char)(stm->objNum & 0xff));
+    k.push_back((char)((stm->objNum >> 8) & 0xff));
+    k.push_back((char)((stm->objNum >> 16) & 0xff));
+    k.push_back((char)(stm->genNum & 0xff));
+    k.push_back((char)((stm->genNum >> 8) & 0xff));
+    if (aesStreams) { k += "sAlT"; }
+    std::string objKey = pdfcrypto::md5(k);
+    objKey.resize((size_t)std::min(encN + 5, 16));
+    if (aesStreams) return pdfcrypto::aesCbcDecrypt(objKey, stm->raw);
+    return pdfcrypto::rc4(objKey, stm->raw);
+}
+
+bool Document::setupEncryption(const ObjP& enc)
+{
+    std::string filter = objName(resolve(enc->get("Filter")));
+    if (filter != "Standard") { warn("unsupported encryption handler " + filter); return false; }
+
+    int V = (int)objNum(resolve(enc->get("V")), 0);
+    int R = (int)objNum(resolve(enc->get("R")), 2);
+    int lengthBits = (int)objNum(resolve(enc->get("Length")), 40);
+    ObjP oObj = resolve(enc->get("O")), uObj = resolve(enc->get("U"));
+    if (!oObj || !uObj || oObj->t != O_STR) { warn("encryption dict incomplete"); return false; }
+
+    if (R >= 5) { warn("AES-256 encryption (R5/R6) not supported yet"); return false; }
+
+    int n = (R == 2) ? 5 : std::max(5, std::min(16, lengthBits / 8));
+    double pv = objNum(resolve(enc->get("P")), 0);
+    uint32_t P = (uint32_t)(int64_t)pv;
+
+    std::string id;
+    if (trailer) {
+        ObjP ids = resolve(trailer->get("ID"));
+        if (ids && ids->t == O_ARR && !ids->arr.empty()) {
+            ObjP first = resolve(ids->arr[0]);
+            if (first && first->t == O_STR) id = first->str;
+        }
+    }
+
+    std::string pw(32, '\0');
+    memcpy(&pw[0], kPad, 32);                       // empty user password, padded
+    std::string h = pw + oObj->str;
+    h.push_back((char)( P        & 0xff));
+    h.push_back((char)((P >> 8)  & 0xff));
+    h.push_back((char)((P >> 16) & 0xff));
+    h.push_back((char)((P >> 24) & 0xff));
+    h += id;
+    if (R >= 4) {
+        ObjP em = resolve(enc->get("EncryptMetadata"));
+        bool meta = em ? (em->t == O_BOOL ? em->b : objNum(em, 1) != 0) : true;
+        if (!meta) h += std::string("\xff\xff\xff\xff", 4);
+    }
+    std::string key = pdfcrypto::md5(h);
+    if (R >= 3) for (int i = 0; i < 50; i++) key = pdfcrypto::md5(key.substr(0, (size_t)n));
+    key.resize((size_t)n);
+
+    // which filter protects streams? /V4 /V5 name a crypt filter in /CF
+    bool aes = false;
+    if (V >= 4) {
+        std::string stmf = objName(resolve(enc->get("StmF")));
+        ObjP cf = resolve(enc->get("CF"));
+        if (!stmf.empty() && stmf != "Identity" && cf) {
+            ObjP sub = resolve(cf->get(stmf.c_str()));
+            if (sub) {
+                std::string cfm = objName(resolve(sub->get("CFM")));
+                aes = (cfm == "AESV2" || cfm == "AESV3");
+            }
+        }
+    }
+
+    encKey = key; encN = n; aesStreams = aes; encrypted = true;
+    return true;
+}
+
 bool Document::decodeStream(const ObjP& stm, std::string& out) {
     if (!stm || !stm->isStream) return false;
-    out = stm->raw;
+    out = encrypted ? decryptStream(stm) : stm->raw;
 
     std::vector<std::string> filters;
     ObjP f = stm->get("Filter");
@@ -874,8 +972,20 @@ bool Document::decodeStream(const ObjP& stm, std::string& out) {
             out = ascii85Decode(out);
         } else if (fn == "RunLengthDecode" || fn == "RL") {
             out = runLengthDecode(out);
-        } else if (fn == "DCTDecode" || fn == "JPXDecode" || fn == "JBIG2Decode" ||
-                   fn == "CCITTFaxDecode") {
+        } else if (fn == "DCTDecode" || fn == "DCT") {
+            // JPEG: decode to raw samples so the image path can treat it like
+            // any other DeviceGray/RGB/CMYK XObject.
+            int iw = 0, ih = 0, ic = 0;
+            unsigned char* pix = stbi_load_from_memory(
+                (const stbi_uc*)out.data(), (int)out.size(), &iw, &ih, &ic, 0);
+            if (!pix || iw <= 0 || ih <= 0 || ic <= 0) {
+                if (pix) stbi_image_free(pix);
+                warn("jpeg decode failed");
+                return false;
+            }
+            out.assign((const char*)pix, (size_t)iw * ih * ic);
+            stbi_image_free(pix);
+        } else if (fn == "JPXDecode" || fn == "JBIG2Decode" || fn == "CCITTFaxDecode") {
             warn("unsupported image filter " + fn);
             return false;
         } else {
