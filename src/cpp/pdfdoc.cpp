@@ -906,7 +906,13 @@ bool Document::setupEncryption(const ObjP& enc)
             warn("AES-256: wrong user password");
             return false;
         }
-        encKey = (R == 5) ? pdfcrypto::sha256(pw + keySalt) : hash2B(pw, keySalt, 6);
+        // R6: the file key is random; /UE holds it encrypted under the intermediate key.
+        std::string intermediate = (R == 5) ? pdfcrypto::sha256(pw + keySalt)
+                                            : hash2B(pw, keySalt, 6);
+        ObjP ueObj = resolve(enc->get("UE"));
+        if (!ueObj || ueObj->str.size() < 32) { warn("AES-256: missing /UE"); return false; }
+        std::string zeroIv(16, '\0');
+        encKey = pdfcrypto::aesCbcDecryptIv(intermediate, zeroIv, ueObj->str.substr(0, 32));
         encN = 32; aesStreams = true; encDirectKey = true; encrypted = true;
         return true;
     }

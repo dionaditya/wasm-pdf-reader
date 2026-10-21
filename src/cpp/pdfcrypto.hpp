@@ -383,4 +383,9 @@ inline std::string aesCbcEncrypt(const std::string& key, const std::string& iv, 
     return out;
 }
 
+
+inline std::string aesCbcDecryptIv(const std::string& key, const std::string& iv, const std::string& data) {
+    return aesCbcDecrypt(key, iv + data);
+}
+
 }  // namespace pdfcrypto
