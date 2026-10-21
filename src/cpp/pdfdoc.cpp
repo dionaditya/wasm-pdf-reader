@@ -5,6 +5,7 @@
 #define STBI_NO_STDIO
 #include "stb_image.h"
 #include "pdfcrypto.hpp"
+#include "ccitt-decoder.hh"
 #include "pdf_widths.h"   // standard-14 AFM advances for fonts without /Widths
 
 #include <algorithm>
@@ -985,7 +986,38 @@ bool Document::decodeStream(const ObjP& stm, std::string& out) {
             }
             out.assign((const char*)pix, (size_t)iw * ih * ic);
             stbi_image_free(pix);
-        } else if (fn == "JPXDecode" || fn == "JBIG2Decode" || fn == "CCITTFaxDecode") {
+        } else if (fn == "CCITTFaxDecode" || fn == "CCF") {
+            int w = (int)objNum(resolve(stm->get("Width")), 0);
+            int h = (int)objNum(resolve(stm->get("Height")), 0);
+            if (w <= 0 || h <= 0) { warn("CCITT without Width/Height"); return false; }
+            int K = -1, cols = w, rows = h;
+            bool blackIs1 = false, byteAlign = false, eol = false;
+            if (prm) {
+                K         = (int)objNum(resolve(prm->get("K")), -1);
+                cols      = (int)objNum(resolve(prm->get("Columns")), w);
+                rows      = (int)objNum(resolve(prm->get("Rows")), h);
+                ObjP bl = resolve(prm->get("BlackIs1"));
+                if (bl && bl->t == O_BOOL) blackIs1 = bl->b;
+                ObjP ba = resolve(prm->get("EncodedByteAlign"));
+                if (ba && ba->t == O_BOOL) byteAlign = ba->b;
+                ObjP el = resolve(prm->get("EndOfLine"));
+                if (el && el->t == O_BOOL) eol = el->b;
+            }
+            if (cols > 0) w = cols;
+            if (rows > 0) h = rows;
+            std::vector<uint8_t> pix;
+            std::string err;
+            if (!nanopdf::ccitt::decode_ccitt_fax((const uint8_t*)out.data(), out.size(),
+                                                  w, h, K, eol, byteAlign, blackIs1, pix, &err)) {
+                warn("CCITT decode failed" + (err.empty() ? "" : (": " + err)));
+                return false;
+            }
+            // PDF's default /Decode for CCITT is [0 1] with BlackIs1 false, i.e.
+            // a zero bit paints black; the decoder emits 1 for black.
+            if (!blackIs1)
+                for (auto& b : pix) b = (uint8_t)~b;
+            out.assign((const char*)pix.data(), pix.size());
+        } else if (fn == "JPXDecode" || fn == "JBIG2Decode") {
             warn("unsupported image filter " + fn);
             return false;
         } else {
