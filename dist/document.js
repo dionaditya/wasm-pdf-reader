@@ -18,6 +18,37 @@ function serialise(task) {
 }
 
 /** Accept ArrayBuffer / TypedArray / Blob / File / URL / Response / fetch(). */
+// Streaming copy: a File/Blob is read in slices straight into the wasm heap, so
+// the document is never duplicated in JS memory. At 1 GB that is the difference
+// between ~2x the file size and ~1x.
+const CHUNK_BYTES = 16 * 1024 * 1024;
+
+async function copyIntoWasm(Module, source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    const size = source.size;
+    if (!size) throw new Error('wasm-pdf-reader: empty file');
+    const ptr = Module._wpdf_alloc(size);
+    if (!ptr) throw new Error('wasm-pdf-reader: out of memory');
+    try {
+      for (let off = 0; off < size; off += CHUNK_BYTES) {
+        const end = Math.min(size, off + CHUNK_BYTES);
+        const chunk = new Uint8Array(await source.slice(off, end).arrayBuffer());
+        Module.HEAPU8.set(chunk, ptr + off);      // re-read after any growth
+      }
+      return { ptr, size };
+    } catch (err) {
+      Module._wpdf_free(ptr);
+      throw err;
+    }
+  }
+  const bytes = await toBytes(source);
+  if (!bytes.length) throw new Error('wasm-pdf-reader: empty file');
+  const ptr = Module._wpdf_alloc(bytes.length);
+  if (!ptr) throw new Error('wasm-pdf-reader: out of memory');
+  Module.HEAPU8.set(bytes, ptr);
+  return { ptr, size: bytes.length };
+}
+
 export async function toBytes(source) {
   if (source == null) throw new TypeError('wasm-pdf-reader: no document given');
   if (source instanceof Uint8Array) return source;
@@ -80,15 +111,10 @@ export class PdfDocument {
    */
   static async open(source, options = {}) {
     const Module = await loadModule(options);
-    const bytes = await toBytes(source);
-    if (!bytes.length) throw new Error('wasm-pdf-reader: empty file');
-
-    const ptr = Module._wpdf_alloc(bytes.length);
-    if (!ptr) throw new Error('wasm-pdf-reader: out of memory');
+    const { ptr, size } = await copyIntoWasm(Module, source);
     let handle = 0;
     try {
-      Module.HEAPU8.set(bytes, ptr);
-      handle = Module._wpdf_open(ptr, bytes.length);
+      handle = Module._wpdf_open(ptr, size);
     } finally {
       Module._wpdf_free(ptr);
     }
@@ -96,7 +122,8 @@ export class PdfDocument {
       const msg = Module.UTF8ToString(Module._wpdf_last_error()) || 'cannot read PDF';
       throw new Error(`wasm-pdf-reader: ${msg}`);
     }
-    const doc = new PdfDocument(Module, handle, bytes);
+    // the bytes now live in wasm memory only; the JS copy is not kept
+    const doc = new PdfDocument(Module, handle, null);
     doc.filename = options.filename || '';
     return doc;
   }
