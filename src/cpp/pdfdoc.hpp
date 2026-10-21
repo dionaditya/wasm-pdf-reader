@@ -108,6 +108,7 @@ struct Document {
     bool  aesStreams = false;
     std::string encKey;                    // file key
     int   encN = 0;                        // key length in bytes
+    bool  encDirectKey = false;            // V5: per-object key is the file key
     std::string decryptStream(const ObjP& stm) const;
     int   depth = 0;
 
