@@ -846,6 +846,10 @@ static const unsigned char kPad[32] = {
 std::string Document::decryptStream(const ObjP& stm) const
 {
     if (!encrypted || !stm) return stm ? stm->raw : std::string();
+    if (encDirectKey) {
+        if (aesStreams) return pdfcrypto::aesCbcDecrypt(encKey, stm->raw);
+        return pdfcrypto::rc4(encKey, stm->raw);
+    }
     std::string k = encKey;
     k.push_back((char)(stm->objNum & 0xff));
     k.push_back((char)((stm->objNum >> 8) & 0xff));
@@ -870,7 +874,48 @@ bool Document::setupEncryption(const ObjP& enc)
     ObjP oObj = resolve(enc->get("O")), uObj = resolve(enc->get("U"));
     if (!oObj || !uObj || oObj->t != O_STR) { warn("encryption dict incomplete"); return false; }
 
-    if (R >= 5) { warn("AES-256 encryption (R5/R6) not supported yet"); return false; }
+    if (R >= 5) {
+        // ISO 32000-2: U = hash(pw + validation salt) || validation salt || key salt
+        std::string U = uObj->str;
+        if (U.size() < 48) { warn("AES-256 U entry short"); return false; }
+        std::string valSalt = U.substr(32, 8);
+        std::string keySalt = U.substr(40, 8);
+        std::string pw;                                  // empty user password
+        auto hash2B = [](const std::string& password, const std::string& salt, int rev) {
+            std::string K = pdfcrypto::sha256(password + salt);
+            std::string udata;
+            for (int i = 0; ; ++i) {
+                std::string K1;
+                std::string block = password + K + udata;
+                for (int r = 0; r < 64; r++) K1 += block;
+                std::string E = pdfcrypto::aesCbcEncrypt(K.substr(0, 16), K.substr(16, 16), K1);
+                int sum = 0;
+                for (int b = 0; b < 16; b++) sum += (unsigned char)E[b];
+                switch (sum % 3) {
+                    case 0:  K = pdfcrypto::sha256(E); break;
+                    case 1:  K = pdfcrypto::sha384(E); break;
+                    default: K = pdfcrypto::sha512(E); break;
+                }
+                if (rev == 5) break;                     // R5 uses a single round
+                if (i >= 63 && (unsigned char)E.back() <= i - 32) break;
+            }
+            return K.substr(0, 32);
+        };
+        std::string check = (R == 5) ? pdfcrypto::sha256(pw + valSalt) : hash2B(pw, valSalt, 6);
+        if (check.compare(0, 32, U, 0, 32) != 0) {
+            warn("AES-256: wrong user password");
+            return false;
+        }
+        // R6: the file key is random; /UE holds it encrypted under the intermediate key.
+        std::string intermediate = (R == 5) ? pdfcrypto::sha256(pw + keySalt)
+                                            : hash2B(pw, keySalt, 6);
+        ObjP ueObj = resolve(enc->get("UE"));
+        if (!ueObj || ueObj->str.size() < 32) { warn("AES-256: missing /UE"); return false; }
+        std::string zeroIv(16, '\0');
+        encKey = pdfcrypto::aesCbcDecryptIv(intermediate, zeroIv, ueObj->str.substr(0, 32));
+        encN = 32; aesStreams = true; encDirectKey = true; encrypted = true;
+        return true;
+    }
 
     int n = (R == 2) ? 5 : std::max(5, std::min(16, lengthBits / 8));
     double pv = objNum(resolve(enc->get("P")), 0);
