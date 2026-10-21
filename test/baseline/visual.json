@@ -1,0 +1,8 @@
+{
+  "note": "SHA-256 of the RGBA page bitmaps at scale 1.0, produced by test/e2e.mjs",
+  "pages": [
+    "b328bd9493a5010ec72144adfdc34b5c66f1c1826e81411fbe8e9119b3226b2e",
+    "35eb9f57b03cc7edf8ac0700302515f56673541a45ee971cece676fa68f10b4c",
+    "bf38e2511959b98829a125e01fee8c0386055773c35b9c464cbd73491ebf7be6"
+  ]
+}

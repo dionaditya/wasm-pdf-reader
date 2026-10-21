@@ -1,0 +1,12 @@
+# dependencies
+node_modules/
+
+# build + generated output that is not published
+_site/
+examples/react/bundle.js
+*.log
+
+# editor / OS noise
+.DS_Store
+.vscode/
+.idea/

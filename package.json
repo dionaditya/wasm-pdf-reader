@@ -1,0 +1,85 @@
+{
+  "name": "wasm-pdf-reader",
+  "version": "0.1.0",
+  "description": "A PDF parser, rasterizer and text extractor in WebAssembly — plain-JS viewer plus React components, no server and no CDN.",
+  "keywords": [
+    "pdf",
+    "pdf-viewer",
+    "pdf-reader",
+    "wasm",
+    "webassembly",
+    "react",
+    "canvas",
+    "document"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./wasm/pdf-reader.wasm": "./dist/wasm/pdf-reader.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src/cpp",
+    "src/js",
+    "src/styles.css",
+    "build.sh",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
+  "scripts": {
+    "build": "npm run build:wasm && npm run build:js && npm run build:react",
+    "build:wasm": "./build.sh",
+    "build:js": "node scripts/build-js.mjs",
+    "build:react": "node examples/build-react.mjs",
+    "build:demo": "node scripts/build-demo.mjs",
+    "fixture": "node scripts/make-fixture.mjs",
+    "serve": "node examples/server.mjs",
+    "test": "node test/unit.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:visual": "node test/e2e.mjs --update-baseline",
+    "test:pages": "node test/pages.mjs",
+    "test:all": "npm test && npm run test:e2e && npm run test:pages",
+    "prepublishOnly": "npm run build:js && npm run test"
+  },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dionaditya/wasm-pdf-reader.git"
+  },
+  "homepage": "https://github.com/dionaditya/wasm-pdf-reader#readme",
+  "bugs": {
+    "url": "https://github.com/dionaditya/wasm-pdf-reader/issues"
+  }
+}

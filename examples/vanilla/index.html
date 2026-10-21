@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wasm-pdf-reader — vanilla JS demo</title>
+<link rel="stylesheet" href="/dist/styles.css">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0b0f19;
+    color: #e8ecf4;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: #111827;
+    border-bottom: 1px solid #1f2937;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+  header h1 span { color: #7dd3fc; }
+  header .spacer { flex: 1; }
+  header .meta { font-size: 12px; color: #94a3b8; }
+  button.demo, label.demo {
+    font: inherit;
+    font-size: 13px;
+    color: #e5e7eb;
+    background: #1f2937;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  button.demo:hover, label.demo:hover { background: #273449; }
+  button.demo[aria-pressed="true"] { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  input[type="search"] {
+    font: inherit;
+    font-size: 13px;
+    color: #e5e7eb;
+    background: #0b1220;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 6px 10px;
+    width: 200px;
+  }
+  main { flex: 1; min-height: 0; }
+  #viewer { height: 100%; }
+
+  /* theme overrides for the built-in viewer */
+  #viewer {
+    --wpdf-bg: #0b0f19;
+    --wpdf-toolbar-bg: #111827;
+    --wpdf-toolbar-border: #1f2937;
+    --wpdf-accent: #7dd3fc;
+    --wpdf-muted: #94a3b8;
+    --wpdf-page-bg: #ffffff;
+    --wpdf-page-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+    --wpdf-radius: 8px;
+  }
+  .hint { font-size: 12px; color: #64748b; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>wasm-pdf-reader <span>· vanilla JS</span></h1>
+    <span class="hint">no server round-trip — the file is parsed in this tab</span>
+    <span class="spacer"></span>
+    <input id="search" type="search" placeholder="search text…" aria-label="Search document">
+    <button class="demo" id="continuous" aria-pressed="false">continuous</button>
+    <button class="demo" id="invert" aria-pressed="false">dark page</button>
+    <button class="demo" id="open">Open PDF…</button>
+    <input id="file" type="file" accept="application/pdf,.pdf" hidden>
+  </header>
+
+  <main><div id="viewer"></div></main>
+
+  <script type="module">
+    import { mountPdfReader } from '/dist/index.js';
+
+    let hits = [];   // search results, drawn by the highlights callback below
+
+    const viewer = mountPdfReader('#viewer', {
+      file: '/test/fixtures/reader-sample.pdf',
+      fit: 'page',
+      labels: { previousPage: 'Previous page', nextPage: 'Next page' },
+      highlights: (page) => hits.filter((h) => h.page === page),
+      onPageChange: (page) => { window.__demoPage = page; },
+    });
+    window.viewer = viewer;   // handy in devtools, and used by the e2e test
+
+    // ── search: highlight every hit on the current page ────────────────────
+    const searchInput = document.getElementById('search');
+    searchInput.addEventListener('input', () => {
+      const q = searchInput.value.trim();
+      hits = q.length > 1 ? viewer.document?.search(q, { limit: 200 }) : [];
+      const first = hits[0]?.page;
+      if (first !== undefined && first !== viewer.state.page) viewer.goToPage(first);
+      else viewer.rerender();
+      window.__demoHits = hits.length;
+    });
+
+    // hooks into the viewer: highlights come from a callback the demo owns
+    window.__demoHighlights = (page) => hits.filter((h) => h.page === page);
+
+    document.getElementById('open').addEventListener('click', () => {
+      document.getElementById('file').click();
+    });
+    document.getElementById('file').addEventListener('change', (ev) => {
+      const f = ev.target.files?.[0];
+      if (f) viewer.setFile(f);
+    });
+
+    document.getElementById('continuous').addEventListener('click', (ev) => {
+      const on = ev.currentTarget.getAttribute('aria-pressed') !== 'true';
+      ev.currentTarget.setAttribute('aria-pressed', String(on));
+      // rebuild the viewer with the other layout
+      const current = viewer.state.page;
+      viewer.destroy();
+      const next = mountPdfReader('#viewer', {
+        file: '/test/fixtures/reader-sample.pdf',
+        fit: 'width',
+        continuous: on,
+        page: current,
+        highlights: (page) => hits.filter((h) => h.page === page),
+      });
+      Object.assign(window, { viewer: next });
+    });
+
+    document.getElementById('invert').addEventListener('click', (ev) => {
+      const on = ev.currentTarget.getAttribute('aria-pressed') !== 'true';
+      ev.currentTarget.setAttribute('aria-pressed', String(on));
+      viewer.setInverted(on);
+    });
+
+    // tell the e2e test when the first page is on screen
+    window.__demoReady = new Promise((resolve) => {
+      const t = setInterval(() => {
+        if (viewer.document && viewer.state.status === 'ready') {
+          clearInterval(t);
+          resolve({ pageCount: viewer.document.pageCount });
+        }
+      }, 50);
+    });
+  </script>
+</body>
+</html>

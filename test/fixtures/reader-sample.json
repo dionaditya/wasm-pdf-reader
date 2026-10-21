@@ -1,0 +1,41 @@
+{
+  "pages": 3,
+  "title": "WASM PDF Reader",
+  "pageSize": [
+    [
+      612,
+      792,
+      0
+    ],
+    [
+      612,
+      792,
+      0
+    ],
+    [
+      792,
+      612,
+      90
+    ]
+  ],
+  "page2Text": "Images and clipping",
+  "pageText": {
+    "0": [
+      "WASM PDF READER",
+      "One file, three pages, no server",
+      "wasm"
+    ],
+    "1": [
+      "Images and clipping",
+      "Clipping is applied with the W n operator pair"
+    ],
+    "2": [
+      "Landscape, /Rotate 90",
+      "ROTATED"
+    ]
+  },
+  "metadata": {
+    "Title": "WASM PDF Reader sample",
+    "Author": "wasm-pdf-reader"
+  }
+}

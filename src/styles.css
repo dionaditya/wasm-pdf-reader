@@ -1,0 +1,189 @@
+// styles.css — the default look of the built-in viewer.
+//
+// Every colour, radius and spacing is a CSS custom property on the root
+// element, so a host app can retheme the viewer without touching the JS:
+//
+//   .my-viewer { --wpdf-accent: #6ee7b7; --wpdf-bg: #0b0f19; }
+//
+// The `theme` option in JS writes the same variables inline, which wins over
+// these defaults without needing a stylesheet.
+
+.wpdf-root {
+  --wpdf-bg: #525659;
+  --wpdf-toolbar-bg: #323639;
+  --wpdf-toolbar-fg: #f1f3f4;
+  --wpdf-toolbar-border: rgba(255, 255, 255, 0.08);
+  --wpdf-page-bg: #ffffff;
+  --wpdf-page-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  --wpdf-accent: #8ab4f8;
+  --wpdf-accent-fg: #202124;
+  --wpdf-muted: #9aa0a6;
+  --wpdf-radius: 6px;
+  --wpdf-gap: 8px;
+  --wpdf-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --wpdf-highlight: rgba(255, 214, 0, 0.35);
+
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--wpdf-bg);
+  color: var(--wpdf-toolbar-fg);
+  font-family: var(--wpdf-font);
+  position: relative;
+}
+
+/* toolbar */
+.wpdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--wpdf-gap);
+  padding: 6px 10px;
+  background: var(--wpdf-toolbar-bg);
+  border-bottom: 1px solid var(--wpdf-toolbar-border);
+  color: var(--wpdf-toolbar-fg);
+  font-size: 13px;
+  flex: 0 0 auto;
+  user-select: none;
+}
+.wpdf-toolbar--hidden { display: none; }
+.wpdf-toolbar__spacer { flex: 1 1 auto; }
+.wpdf-toolbar__group { display: flex; align-items: center; gap: 4px; }
+.wpdf-toolbar__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+  color: var(--wpdf-toolbar-fg);
+  opacity: 0.9;
+}
+.wpdf-button {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: calc(var(--wpdf-radius) - 2px);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.wpdf-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.wpdf-button:active:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.wpdf-button:focus-visible { outline: 2px solid var(--wpdf-accent); outline-offset: 1px; }
+.wpdf-button:disabled { opacity: 0.4; cursor: default; }
+.wpdf-button--active { background: color-mix(in srgb, var(--wpdf-accent) 25%, transparent); }
+.wpdf-input {
+  width: 4ch;
+  text-align: center;
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--wpdf-toolbar-border);
+  border-radius: calc(var(--wpdf-radius) - 2px);
+  padding: 4px 2px;
+}
+.wpdf-select {
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--wpdf-toolbar-border);
+  border-radius: calc(var(--wpdf-radius) - 2px);
+  padding: 4px 6px;
+}
+
+/* viewport */
+.wpdf-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  scroll-behavior: smooth;
+}
+.wpdf-viewport--continuous { flex-direction: column; align-items: center; gap: 16px; }
+
+.wpdf-page {
+  position: relative;
+  background: var(--wpdf-page-bg);
+  box-shadow: var(--wpdf-page-shadow);
+  border-radius: 2px;
+  line-height: 0;
+  flex: 0 0 auto;
+}
+.wpdf-page__canvas { display: block; border-radius: 2px; }
+.wpdf-page__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  line-height: normal;
+}
+.wpdf-highlight {
+  position: absolute;
+  background: var(--wpdf-highlight);
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+}
+.wpdf-page__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--wpdf-muted);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--wpdf-page-bg) 90%, #000 10%);
+}
+
+/* status + overlays */
+.wpdf-status {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 4px 10px;
+  color: var(--wpdf-muted);
+  background: var(--wpdf-toolbar-bg);
+  border-top: 1px solid var(--wpdf-toolbar-border);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.wpdf-status--hidden { display: none; }
+.wpdf-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--wpdf-bg) 70%, transparent);
+  color: var(--wpdf-toolbar-fg);
+  font-size: 14px;
+  text-align: center;
+  padding: 24px;
+  z-index: 2;
+}
+.wpdf-overlay--error { color: #ffb4ab; }
+/* the element carries `hidden` when there is nothing to show; the flex display
+   above would otherwise win over the UA [hidden] rule */
+.wpdf-overlay[hidden] { display: none; }
+.wpdf-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: wpdf-spin 0.8s linear infinite;
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: -4px;
+}
+@keyframes wpdf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .wpdf-spinner { animation-duration: 2.4s; }
+  .wpdf-viewport { scroll-behavior: auto; }
+}
+
+/* dark page variant: useful for night modes without touching the wasm output */
+.wpdf-root--invert .wpdf-page__canvas { filter: invert(1) hue-rotate(180deg); }
