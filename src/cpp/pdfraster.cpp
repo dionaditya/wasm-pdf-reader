@@ -970,11 +970,11 @@ void Interp::drawImage(ObjP io, GState& gs) {
         if (x >= iw) x = iw - 1;
         if (y >= ih) y = ih - 1;
         if (bpc == 8) {
-            size_t idx = ((size_t)y * iw + x) * ncomp + c;
+            size_t idx = ((size_t)(ih - 1 - y) * iw + x) * ncomp + c;
             return (unsigned char)raw[idx] / 255.f;
         }
         if (bpc == 1) {
-            size_t bit = ((size_t)y * iw + x) * ncomp + c;
+            size_t bit = ((size_t)(ih - 1 - y) * iw + x) * ncomp + c;
             int byte = (unsigned char)raw[bit >> 3];
             return ((byte >> (7 - (bit & 7))) & 1) ? 1.f : 0.f;
         }

@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>samples</title>
+<style>
+ body{font:14px/1.4 system-ui,sans-serif;background:#11161f;color:#e6edf7;margin:0;padding:24px}
+ .card{background:#182130;border:1px solid #24314a;border-radius:10px;padding:16px;display:inline-block}
+ .tag{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#7fd4c1;margin-bottom:10px}
+ canvas{background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.5);display:block}
+</style>
+<div id="app"></div>
+<script type="module">
+import { PdfDocument } from '../dist/index.js';
+const q = new URLSearchParams(location.search);
+const file = q.get('f') || 'scan-ccitt.pdf';
+const label = q.get('label') || file;
+document.getElementById('app').innerHTML =
+  `<div class="card"><div class="tag">${label}</div><canvas id="c"></canvas></div>`;
+const bytes = new Uint8Array(await (await fetch(file)).arrayBuffer());
+const doc = await PdfDocument.open(bytes);
+const page = await doc.render(0, { scale: 1.5 });
+const c = document.getElementById('c');
+c.width = page.width; c.height = page.height;
+c.getContext('2d').putImageData(page.imageData, 0, 0);
+window.__ready = true;
+</script>
