@@ -245,9 +245,12 @@ bool Document::load(const uint8_t* data, size_t len) {
     warnings.clear();
     cache.clear();
     xref.clear();
+    xrefFree.clear();
     pages.clear();
     fontCache.clear();
     objNumToStm.clear();
+    stmCache.clear();
+    stmCacheBytes = 0;
     buf.assign((const char*)data, len);
     if (buf.size() < 8) { error = "file too small"; return false; }
 
@@ -335,6 +338,7 @@ ObjP Document::obj(int num) {
     long off = -1;
     auto xit = xref.find(num);
     if (xit != xref.end()) off = xit->second;
+    if (xrefFree.count(num)) { cache[num] = mkNull(); return cache[num]; }  // deleted
 
     ObjP res;
     if (off >= 0) {
@@ -346,13 +350,13 @@ ObjP Document::obj(int num) {
         auto sit = objNumToStm.find(num);
         if (sit != objNumToStm.end()) res = objFromObjectStream(sit->second, num);
     }
-    if (!res) {
-        // last resort: scan for "num gen obj"
-        std::string pat = std::to_string(num) + " 0 obj";
-        size_t p = buf.find(pat);
-        if (p != std::string::npos) {
+    if (!res || res->t == O_NULL) {
+        // last resort: scan for "<num> <gen> obj" in the raw bytes
+        long p = scanObjectOffset(num);
+        if (p >= 0) {
             bool ok = false;
-            res = parseObjectAt((long)p, &ok);
+            ObjP scanned = parseObjectAt(p, &ok);
+            if (ok && scanned && scanned->t != O_NULL) res = scanned;
         }
     }
     if (!res) res = mkNull();
@@ -364,24 +368,83 @@ ObjP Document::objFromObjectStream(int stmNum, int wantNum) {
     ObjP stm = obj(stmNum);
     if (!stm || !stm->isStream) return nullptr;
     std::string data;
-    if (!decodeStream(stm, data)) return nullptr;
-    ObjP nObj = resolve(stm->get("N"));
-    int n = (int)objNum(nObj, 0);
-    Lex lex(this, data.data(), data.data() + data.size());
+    const std::string* cached = nullptr;
+    auto cit = stmCache.find(stmNum);
+    if (cit != stmCache.end()) {
+        cached = &cit->second;
+    } else {
+        if (!decodeStream(stm, data)) return nullptr;
+    }
+    const std::string& objData = cached ? *cached : data;
+
+    int n = (int)objNum(resolve(stm->get("N")), 0);
+    // Object data starts at /First; the (num, offset) pairs in the header are
+    // relative to it. calibre, Acrobat and Ghostscript all write a non-zero
+    // /First, so treating the offsets as absolute parses the header itself as
+    // object data and every compressed object comes back as garbage.
+    long first = (long)objNum(resolve(stm->get("First")), 0);
+    if (first < 0 || (size_t)first > objData.size()) first = 0;
+
     std::vector<std::pair<int, long>> offs;
+    Lex lex(this, objData.data(), objData.data() + objData.size());
     for (int i = 0; i < n; i++) {
         double a, b; bool ia, ib;
         if (!lex.readNumber(a, ia)) break;
         if (!lex.readNumber(b, ib)) break;
         offs.push_back({(int)a, (long)b});
     }
+    if (!cached) {
+        // remember the decoded stream: a book can hold thousands of objects in
+        // a handful of streams, and inflating them per object is the hot path
+        if (stmCacheBytes + data.size() < 32u * 1024u * 1024u) {
+            stmCache[stmNum] = data;
+            stmCacheBytes += data.size();
+        }
+    }
     for (auto& o : offs) {
         if (o.first != wantNum) continue;
-        if (o.second < 0 || (size_t)o.second >= data.size()) return nullptr;
-        Lex l2(this, data.data() + o.second, data.data() + data.size());
-        return l2.parse();
+        // spec position first, then the absolute offset as a fallback for
+        // writers that stored offsets relative to the stream start
+        long pos = first + o.second;
+        if (pos >= 0 && (size_t)pos < objData.size()) {
+            Lex l2(this, objData.data() + pos, objData.data() + objData.size());
+            ObjP r = l2.parse();
+            if (r && r->t != O_NULL) return r;
+        }
+        if (o.second >= 0 && (size_t)o.second < objData.size()) {
+            Lex l3(this, objData.data() + o.second, objData.data() + objData.size());
+            ObjP r = l3.parse();
+            if (r && r->t != O_NULL) return r;
+        }
+        return nullptr;
     }
     return nullptr;
+}
+
+// Last resort for objects the xref does not cover: find "<num> <gen> obj" in
+// the raw bytes. The number must start a token, otherwise object 37 matches
+// inside "1337 0 obj"; the last match wins because incremental updates append.
+long Document::scanObjectOffset(int num) const {
+    const std::string pat = std::to_string(num);
+    long found = -1;
+    size_t p = 0;
+    while ((p = buf.find(pat, p)) != std::string::npos) {
+        bool leftOk = p == 0 || !(isdigit((unsigned char)buf[p - 1]) || buf[p - 1] == '.');
+        size_t q = p + pat.size();
+        if (leftOk && q < buf.size() && isWS((unsigned char)buf[q])) {
+            while (q < buf.size() && isWS((unsigned char)buf[q])) ++q;
+            size_t gs = q;
+            while (q < buf.size() && isdigit((unsigned char)buf[q])) ++q;
+            if (q > gs) {
+                while (q < buf.size() && isWS((unsigned char)buf[q])) ++q;
+                if (q + 3 <= buf.size() && buf.compare(q, 3, "obj") == 0 &&
+                    (q + 3 >= buf.size() || !isRegular((unsigned char)buf[q + 3])))
+                    found = (long)p;
+            }
+        }
+        p += pat.size();
+    }
+    return found;
 }
 
 ObjP Document::parseObjectAt(long off, bool* ok) {

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -122,9 +123,13 @@ struct Document {
     struct Lex;
     ObjP parseObjectAt(long off, bool* ok);
     ObjP objFromObjectStream(int stmNum, int wantNum);
+    long scanObjectOffset(int num) const;
     bool  parseXref(long off, int depth);
     void  reconstructXref();
     std::map<std::string, std::shared_ptr<Font>> fontCache;
+    std::map<int, std::string> stmCache;   // decoded object streams, by obj num
+    size_t stmCacheBytes = 0;
+    std::set<int> xrefFree;                // objects deleted by a later update
 };
 
 std::string objName(const ObjP& o);

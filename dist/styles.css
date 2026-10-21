@@ -1,12 +1,13 @@
-// styles.css — the default look of the built-in viewer.
-//
-// Every colour, radius and spacing is a CSS custom property on the root
-// element, so a host app can retheme the viewer without touching the JS:
-//
-//   .my-viewer { --wpdf-accent: #6ee7b7; --wpdf-bg: #0b0f19; }
-//
-// The `theme` option in JS writes the same variables inline, which wins over
-// these defaults without needing a stylesheet.
+/* styles.css — the default look of the built-in viewer.
+ *
+ * Every colour, radius and spacing is a CSS custom property on the root
+ * element, so a host app can retheme the viewer without touching the JS:
+ *
+ *   .my-viewer { --wpdf-accent: #6ee7b7; --wpdf-bg: #0b0f19; }
+ *
+ * The `theme` option in JS writes the same variables inline, which wins over
+ * these defaults without needing a stylesheet.
+ */
 
 .wpdf-root {
   --wpdf-bg: #525659;

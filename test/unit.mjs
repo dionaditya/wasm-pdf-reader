@@ -186,4 +186,35 @@ await check('a second document can be opened after the first is closed', async (
   again.close();
 });
 
+// ── object streams whose data starts at /First, not at byte 0 ───────────────
+// calibre, Acrobat and Ghostscript all write a non-zero /First. Reading the
+// header as object data yields a one-page document of garbage.
+const objStmPath = join(root, 'test', 'fixtures', 'objstm-sample.pdf');
+const objStmExpect = JSON.parse(await readFile(join(root, 'test', 'fixtures', 'objstm-sample.json'), 'utf8'));
+const objStmBytes = await readFile(objStmPath);
+const objStmDoc = await PdfDocument.open(objStmBytes, { filename: 'objstm-sample.pdf' });
+
+await check('object stream: catalog and page tree resolve through /First', () => {
+  assert.equal(objStmDoc.pageCount, objStmExpect.pages);
+  assert.equal(objStmDoc.warnings.length, 0);
+});
+
+await check('object stream: geometry and text come from compressed objects', () => {
+  const size = objStmDoc.getPageSize(0);
+  assert.equal(Math.round(size.width), 612);
+  assert.equal(Math.round(size.height), 792);
+  objStmExpect.pageText[1].forEach((needle) => {
+    assert.ok(objStmDoc.getPageText(1).includes(needle), `page 1 should contain ${needle}`);
+  });
+});
+
+await check('object stream: pages rasterize with real ink', async () => {
+  for (const page of [0, 1]) {
+    const { imageData } = await objStmDoc.render(page, { scale: 0.5 });
+    assert.ok(inkRatio(imageData) > 0.005, `page ${page} should have ink`);
+  }
+});
+objStmDoc.close();
+
+
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

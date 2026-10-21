@@ -4,6 +4,10 @@ A PDF reader in WebAssembly: it parses, rasterizes and extracts text from a PDF
 inside the browser tab. No server, no upload, no CDN — a ~1.5 MB module that a
 vanilla page or a React app can drive.
 
+Packaged as `@dionaditya/wasm-pdf-reader`. Try it without installing anything:
+[vanilla demo](https://dionaditya.github.io/wasm-pdf-reader/vanilla/) ·
+[React demo](https://dionaditya.github.io/wasm-pdf-reader/react/).
+
 ![The vanilla viewer showing the generated sample](docs/screenshots/vanilla.png)
 
 The C++ core (lexer, xref, object streams, filters, content-stream interpreter,
@@ -14,7 +18,9 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 
 - **Parsing** — classic xref tables and xref streams, object streams, `/Prev`
   chains, incremental updates, xref rebuild for damaged files, Flate/LZW/
-  ASCII85/ASCIIHex/RunLength with PNG and TIFF predictors.
+  ASCII85/ASCIIHex/RunLength with PNG and TIFF predictors. Object-stream offsets
+  are read relative to `/First`, which is how calibre, Acrobat and Ghostscript
+  write them.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
   clipping, text with the standard-14 metrics, Type0/Identity-H with embedded
   TrueType, Form and Image XObjects (Flate and baseline JPEG), inline images,
@@ -33,7 +39,15 @@ surface what was skipped.
 ## Install
 
 ```bash
-npm install wasm-pdf-reader
+npm install @dionaditya/wasm-pdf-reader
+```
+
+0.1.0 is not on the registry yet (the unscoped name was rejected as too close to
+an existing package, hence the scope). Until it is published, install from the
+repository — the built `dist/`, wasm included, is committed:
+
+```bash
+npm install github:dionaditya/wasm-pdf-reader
 ```
 
 ESM only. The wasm glue is a sibling of `pdf-reader.wasm`, so Vite, webpack and
@@ -42,8 +56,8 @@ esbuild pick up both automatically.
 ## Use it from plain JavaScript
 
 ```js
-import { PdfDocument, mountPdfReader } from 'wasm-pdf-reader';
-import 'wasm-pdf-reader/styles.css';
+import { PdfDocument, mountPdfReader } from '@dionaditya/wasm-pdf-reader';
+import '@dionaditya/wasm-pdf-reader/styles.css';
 
 // 1. the whole viewer, toolbar included
 const viewer = mountPdfReader('#viewer', {
@@ -66,8 +80,8 @@ doc.close();
 ## Use it from React
 
 ```jsx
-import { PdfReader } from 'wasm-pdf-reader/react';
-import 'wasm-pdf-reader/styles.css';
+import { PdfReader } from '@dionaditya/wasm-pdf-reader/react';
+import '@dionaditya/wasm-pdf-reader/styles.css';
 
 export default function Preview({ file }) {
   return (
@@ -157,17 +171,20 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, geometry, raster, text, search (17 checks)
+npm test              # core: parse, geometry, raster, text, search (20 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:visual   # rewrite the pixel baseline after an intended change
 ```
 
-`test:unit` runs the real wasm module in Node against a generated fixture
-(`scripts/make-fixture.mjs`: three pages with text, vector art, an image
-XObject, clipping and a `/Rotate 90` page). `test:e2e` drives the vanilla and
-React demos over CDP, asserts ink coverage and navigation, hashes each page
-bitmap, and writes the screenshots in `docs/screenshots/`.
+`test:unit` runs the real wasm module in Node against two generated fixtures:
+`scripts/make-fixture.mjs` (three pages with text, vector art, an image XObject,
+clipping and a `/Rotate 90` page) and `scripts/make-objstm-fixture.mjs`, a
+calibre-shaped document whose catalog, page tree and font live in an object
+stream with a non-zero `/First` and whose xref is an `/XRef` stream with a PNG
+predictor. `test:e2e` drives the vanilla and React demos over CDP, asserts ink
+coverage and navigation, hashes each page bitmap, and writes the screenshots in
+`docs/screenshots/`.
 
 ## Layout
 

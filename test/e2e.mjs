@@ -147,8 +147,13 @@ try {
     const start = await width();
     await page.eval('window.viewer.zoomIn()');
     await page.waitFor(`document.querySelector('.wpdf-page canvas').width > ${start}`, { label: 'zoom in' });
+    // the demo opens in fit="page", so fit-width lands on a different scale than
+    // the starting one: assert it matches the viewport, not the previous width
     await page.eval('window.viewer.fitWidth()');
-    await page.waitFor(`document.querySelector('.wpdf-page canvas').width === ${start}`, { label: 'fit width' });
+    await page.waitFor(
+      `Math.abs(document.querySelector('.wpdf-page canvas').width - (document.querySelector('.wpdf-viewport').clientWidth - 32)) <= 2`,
+      { label: 'fit width' },
+    );
   });
 
   await step('search highlights matches on the page', async () => {

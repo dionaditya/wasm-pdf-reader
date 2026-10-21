@@ -1,7 +1,7 @@
 // wasm-pdf-reader/react — React bindings.
 //
-//   import { PdfReader } from 'wasm-pdf-reader/react';
-//   import 'wasm-pdf-reader/styles.css';
+//   import { PdfReader } from '@dionaditya/wasm-pdf-reader/react';
+//   import '@dionaditya/wasm-pdf-reader/styles.css';
 //
 // Components are optional: the hooks and the core PdfDocument work on their
 // own, and the components are just one way to lay them out.

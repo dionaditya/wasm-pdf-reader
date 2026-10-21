@@ -6,6 +6,9 @@ _site/
 examples/react/bundle.js
 *.log
 
+# publish artefacts
+*.tgz
+
 # editor / OS noise
 .DS_Store
 .vscode/

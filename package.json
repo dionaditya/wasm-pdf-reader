@@ -1,5 +1,5 @@
 {
-  "name": "wasm-pdf-reader",
+  "name": "@dionaditya/wasm-pdf-reader",
   "version": "0.1.0",
   "description": "A PDF parser, rasterizer and text extractor in WebAssembly — plain-JS viewer plus React components, no server and no CDN.",
   "keywords": [
@@ -13,6 +13,9 @@
     "document"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -50,6 +53,7 @@
     "build:react": "node examples/build-react.mjs",
     "build:demo": "node scripts/build-demo.mjs",
     "fixture": "node scripts/make-fixture.mjs",
+    "fixture:objstm": "node scripts/make-objstm-fixture.mjs",
     "serve": "node examples/server.mjs",
     "test": "node test/unit.mjs",
     "test:e2e": "node test/e2e.mjs",

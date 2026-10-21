@@ -247,8 +247,10 @@ export function mountPdfReader(target, options = {}) {
   function pageScale() {
     const size = state.doc?.getPageSize(state.page) || { width: 612, height: 792 };
     const pad = 32;
-    const vw = Math.max(120, viewport.clientWidth - pad);
-    const vh = Math.max(120, viewport.clientHeight - pad);
+    // Before the first layout pass the viewport can report 0; fall back to the
+    // window so the first page is never rendered at thumbnail size.
+    const vw = Math.max(120, (viewport.clientWidth || window.innerWidth) - pad);
+    const vh = Math.max(120, (viewport.clientHeight || window.innerHeight - 120) - pad);
     if (state.fit === 'width') return vw / size.width;
     if (state.fit === 'page') return Math.min(vw / size.width, vh / size.height);
     return state.scale;
@@ -428,6 +430,13 @@ export function mountPdfReader(target, options = {}) {
       setOverlay(null);
       state.pageEls = [];
       opts.continuous ? await renderContinuous() : await renderSingle();
+      // fit modes depend on the viewport, which may only settle after this
+      // frame; re-render once the layout is real.
+      if (state.fit === 'width' || state.fit === 'page') {
+        requestAnimationFrame(() => {
+          if (!destroyed && state.doc) (opts.continuous ? renderContinuous() : renderSingle());
+        });
+      }
       updateToolbar();
       updateStatus();
       emit('onReady', { pageCount: doc.pageCount, metadata: doc.metadata, document: doc });
