@@ -41,7 +41,8 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   Software rasterizer with 4× vertical supersampling, returning RGBA8.
   Images larger than the destination are box-averaged, so a 5000 px scan drawn
   at 600 px stays readable instead of aliasing.
-- **Images** — Flate, DCT (JPEG), CCITT G3/G4 fax, JPEG 2000, and JBIG2.
+- **Images** — Flate, DCT (JPEG), CCITT G3/G4 fax, JBIG2, and JPEG 2000 (see
+  [Limits](#limits): the JPX path only handles some encoders).
   PDFium's JBIG2 and fax decoders are translated to C with `wasm2c` and linked
   into `pdf-reader.wasm`, so scans decode in the same pass as everything else —
   no second binary, no JS hand-off, no re-render. Stencil `/Mask` streams decode
@@ -83,6 +84,28 @@ resident in wasm memory). Annotations render but are not interactive beyond
 links: there is no panel for note text, and a highlight uses alpha rather than
 a multiply blend, so overlapping marks darken instead of saturating.
 
+## Rendered examples
+
+Every image below is the engine's own output at scale 1 (72 dpi), not a
+screenshot of another viewer.
+
+**Annotations without appearance streams** — left: highlight (two quads),
+underline, strikeout and squiggly painted from `/QuadPoints` + `/C`; right:
+three `/Text` notes whose icon is built from `/Rect` alone:
+
+![Highlight, underline, strikeout and squiggly painted from QuadPoints](docs/screenshots/feature-annotations.png)
+
+**CJK through a predefined CMap** — `/Encoding /UniJIS-UCS2-H` mapping UCS-2
+codes to Adobe-Japan1 CIDs, then `/CIDToGIDMap` to the embedded Noto subset.
+Ink ratio 0.0047 against MuPDF's 0.0049, mean abs diff 0.08/255:
+
+![日本語のテキスト rendered through UniJIS-UCS2-H](docs/screenshots/feature-cmaps.png)
+
+**JBIG2 scan** — a 19th-century two-column page decoded from a JBIG2 stream
+with a global symbol dictionary, drawn at 1:1:
+
+![A scanned page decoded from JBIG2](docs/screenshots/feature-jbig2.png)
+
 ## Security notes
 
 - **No `eval`, by construction.** Parsing and rasterizing are C++; no JavaScript
@@ -117,6 +140,12 @@ a multiply blend, so overlapping marks darken instead of saturating.
     renderer caps a page at 40 MP`
   - `render failed: not enough memory for a 6000x8000 px page (183 MB); the wasm
     heap could not grow`
+- **JPEG 2000 covers one encoder so far.** The bundled JPX decoder renders the
+  pdf.js reference fixture correctly, but a codestream written by OpenJPEG —
+  what Pillow and most converters emit — decodes to noise: a flat-colour
+  64x48 image differs from MuPDF by 14/255 and a grey ramp by 74/255, while the
+  same images as JPEG, CCITT or JBIG2 match to ~2/255. Fixable; until then do
+  not trust `/JPXDecode` pages.
 - **Encrypted files need their password up front.** There is no callback asking
   the handler for one mid-parse; pass `password` to `open()` (the demo prompts
   once and retries).

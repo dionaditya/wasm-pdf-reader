@@ -323,7 +323,9 @@ export function mountPdfReader(target, options = {}) {
         const index = Number(entry.target.dataset.page);
         renderInto(entry.target, index, scale, token);
       }
-    }, { root: viewport, rootMargin: '300px 0px' });
+    // A tall fit-width page can fill more than one viewport, so a fixed pixel
+    // margin left the next page unrendered until it was already on screen.
+    }, { root: viewport, rootMargin: '50% 0px 50% 0px' });
 
     for (let i = 0; i < state.doc.pageCount; i++) {
       const size = state.doc.getPageSize(i);
@@ -339,6 +341,13 @@ export function mountPdfReader(target, options = {}) {
       viewport.appendChild(pageEl);
       state.pageEls[i] = pageEl;
       observer.observe(pageEl);
+    }
+    // Always paint the current page and its neighbours: at fit-width a page can
+    // be taller than a viewport, which puts the next one outside any sane
+    // rootMargin and leaves it as a placeholder until the user scrolls.
+    for (const i of [state.page - 1, state.page, state.page + 1]) {
+      const node = state.pageEls[i];
+      if (node) renderInto(node, i, scale, token);
     }
     updateToolbar();
   }
@@ -367,7 +376,8 @@ export function mountPdfReader(target, options = {}) {
           scale, height: size.height, boxY0: size.boxY0,
         }));
       }
-      linkLayer(pageEl, index);
+      const linkEl = linkLayer(pageEl, index);
+      if (linkEl) pageEl.appendChild(linkEl);
       selectionLayer(pageEl);
       const hl = opts.highlights?.(index, scale) || [];
       if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));

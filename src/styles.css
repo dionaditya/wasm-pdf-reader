@@ -112,7 +112,15 @@
   padding: 16px;
   scroll-behavior: smooth;
 }
-.wpdf-viewport--continuous { flex-direction: column; align-items: center; gap: 16px; }
+.wpdf-viewport--continuous {
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  /* the single-page layout centres its one page with justify-content; a column
+     of pages centred that way overflows *above* the scroll origin, so page 1
+     becomes unreachable and the scrollbar reports no overflow at all */
+  justify-content: flex-start;
+}
 
 .wpdf-page {
   position: relative;
@@ -182,6 +190,9 @@
   border-radius: 2px;
   cursor: pointer;
   outline: none;
+  /* the layer is inert so highlights and the selection overlay cannot eat
+     clicks; the anchors themselves have to opt back in or every link is dead */
+  pointer-events: auto;
 }
 .wpdf-link:hover,
 .wpdf-link:focus-visible {
