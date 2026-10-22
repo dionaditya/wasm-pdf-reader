@@ -4,7 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased] 
+## [Unreleased]
+
+### Added
+- Optional WebAssembly viewer at `/apps/files_pdfviewer/wasm?file=...`. It uses
+  the same `?file=` contract as the PDF.js route, so the Files app can hand it
+  the same URL; the PDF.js viewer stays the default. The engine is a C++ PDF
+  parser and rasterizer compiled to WebAssembly: no JavaScript is generated from
+  document data and the page CSP keeps `unsafe-eval` disabled, so the
+  CVE-2024-4367 class of font-matrix injection has no sink to reach. Registered
+  as a separate route so reviewers can compare both viewers on the same file.
 
 ## [1.1.2] - 2026-09-09
 

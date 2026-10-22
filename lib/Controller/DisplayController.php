@@ -72,6 +72,37 @@ class DisplayController extends Controller {
 	}
 
 	/**
+	 * WebAssembly viewer. Same ?file= contract as showPdfViewer(), so the Files
+	 * app can open either route without changing how it builds the URL.
+	 *
+	 * @PublicPage
+	 * @NoCSRFRequired
+	 *
+	 * @return TemplateResponse
+	 */
+	public function showWasmViewer() {
+		$params = [
+			'urlGenerator' => $this->urlGenerator,
+		];
+
+		$response = new TemplateResponse($this->appName, 'wasmviewer', $params, 'blank');
+
+		$policy = new ContentSecurityPolicy();
+		$policy->addAllowedImageDomain('*');
+		$policy->addAllowedConnectDomain('blob: data:');
+		// The engine is C++ compiled to WebAssembly, so the page must be allowed
+		// to compile a module. 'wasm-unsafe-eval' is the narrow keyword for that
+		// - it does not enable JavaScript eval, which stays disabled below.
+		// Core has no setter for the keyword yet, and the policy builder joins
+		// this list verbatim, so the keyword is passed as a script source.
+		$policy->addAllowedScriptDomain("'wasm-unsafe-eval'");
+		$policy->allowEvalScript(false);
+		$response->setContentSecurityPolicy($policy);
+
+		return $response;
+	}
+
+	/**
 	 * @PublicPage
 	 * @NoCSRFRequired
 	 * @return JSONResponse

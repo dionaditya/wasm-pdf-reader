@@ -1,0 +1,28 @@
+/**
+ * Host styles for the WebAssembly viewer page. The viewer brings its own
+ * stylesheet; this only makes it fill the window and gives failures somewhere
+ * readable to land.
+ */
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	background: #202124;
+	font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.wpdf-host {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.wpdf-host--error {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	color: #f1f3f4;
+	text-align: center;
+}
