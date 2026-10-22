@@ -125,17 +125,8 @@
     document.getElementById('continuous').addEventListener('click', (ev) => {
       const on = ev.currentTarget.getAttribute('aria-pressed') !== 'true';
       ev.currentTarget.setAttribute('aria-pressed', String(on));
-      // rebuild the viewer with the other layout
-      const current = viewer.state.page;
-      viewer.destroy();
-      const next = mountPdfReader('#viewer', {
-        file: '/test/fixtures/reader-sample.pdf',
-        fit: 'width',
-        continuous: on,
-        page: current,
-        highlights: (page) => hits.filter((h) => h.page === page),
-      });
-      Object.assign(window, { viewer: next });
+      // switch layout in place: remounting lost scroll position and search hits
+      viewer.setContinuous(on);
     });
 
     document.getElementById('invert').addEventListener('click', (ev) => {
