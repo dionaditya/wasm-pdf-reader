@@ -124,3 +124,38 @@ export function boxToCss(box, page) {
     height: (box.y1 - box.y0) * s,
   };
 }
+
+/**
+ * Build a transparent text layer over a rendered page, so the text can be
+ * selected, copied and found with the browser's own Ctrl+F. The canvas is the
+ * visual source of truth; these spans only carry the characters and their
+ * boxes, and are stretched to the box the engine measured.
+ *
+ * @param {TextItem[]} items
+ * @param {{scale: number, height: number, boxY0?: number, className?: string}} geo
+ * @returns {HTMLElement}
+ */
+export function buildTextLayer(items, geo) {
+  const layer = document.createElement('div');
+  layer.className = `wpdf-textlayer${geo.className ? ` ${geo.className}` : ''}`;
+  const scale = geo.scale || 1;
+  const spans = [];
+  for (const item of items) {
+    if (!item.text) continue;
+    const css = boxToCss(item, { height: geo.height, boxY0: geo.boxY0 ?? 0, scale });
+    const span = document.createElement('span');
+    span.textContent = item.text;
+    span.style.left = `${css.left}px`;
+    span.style.top = `${css.top}px`;
+    span.style.fontSize = `${Math.max(0.5, item.fs * scale)}px`;
+    layer.appendChild(span);
+    spans.push({ span, width: Math.max(1, css.width) });
+  }
+  // Stretch each run to the width the engine measured: without this a
+  // substitute face drifts and selections land on the wrong glyphs.
+  for (const { span, width } of spans) {
+    const natural = span.getBoundingClientRect ? span.getBoundingClientRect().width : 0;
+    if (natural > 0.5) span.style.transform = `scaleX(${(width / natural).toFixed(3)})`;
+  }
+  return layer;
+}

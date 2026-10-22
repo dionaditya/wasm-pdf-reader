@@ -1,6 +1,7 @@
 import { jsx, jsxs } from "react/jsx-runtime";
 import React, { useEffect, useRef } from "react";
 import { usePdfPage, useInView } from "./hooks.js";
+import { buildTextLayer } from "../text.js";
 function PdfPage(props) {
   const {
     document: doc,
@@ -10,6 +11,7 @@ function PdfPage(props) {
     pixelTransform,
     renderer,
     lazy = false,
+    textLayer = true,
     children,
     onRender,
     onError,
@@ -30,6 +32,19 @@ function PdfPage(props) {
   const size = doc ? doc.getPageSize(page) : { width: 612, height: 792 };
   const width = cssWidth || size.width * scale;
   const height = cssHeight || size.height * scale;
+  const textRef = useRef(null);
+  useEffect(() => {
+    const host = textRef.current;
+    if (!host) return;
+    host.replaceChildren();
+    if (!doc || textLayer === false) return;
+    const size2 = doc.getPageSize(page);
+    host.appendChild(buildTextLayer(doc.getText(page), {
+      scale,
+      height: size2.height,
+      boxY0: size2.boxY0
+    }));
+  }, [doc, page, scale, textLayer, width, height]);
   const reported = useRef(null);
   useEffect(() => {
     if (error) onError?.(error);
@@ -58,6 +73,7 @@ function PdfPage(props) {
             role: "img"
           }
         ),
+        /* @__PURE__ */ jsx("div", { className: "wpdf-page__text", ref: textRef, "aria-hidden": textLayer === false }),
         !stats && !error && (placeholder || (rendering ? null : null)),
         error && /* @__PURE__ */ jsx("div", { className: "wpdf-page__placeholder", style: { position: "absolute", inset: 0 }, children: error.message }),
         children && /* @__PURE__ */ jsx("div", { className: "wpdf-page__overlay", children })

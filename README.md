@@ -47,7 +47,11 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   annotations are drawn from their `/AP` appearance streams, which is where
   signatures, stamps and meterai actually live.
 - **Text layer** — glyph runs with page-space boxes, so you can select, copy,
-  search and draw highlights without a second parser.
+  search and draw highlights without a second parser. The viewer mounts a
+  transparent `.wpdf-textlayer` over the canvas (each run is a span, stretched
+  to the width the engine measured), which makes drag-selection, Ctrl+C and the
+  browser's own find-in-page work. Turn it off with `textLayer: false` if you
+  only need pixels.
 - **No network** — the wasm binary loads from your own origin; the file never
   leaves the tab.
 

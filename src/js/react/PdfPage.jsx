@@ -6,6 +6,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { usePdfPage, useInView } from './hooks.js';
+import { buildTextLayer } from '../text.js';
 
 /**
  * @param {Object} props
@@ -32,6 +33,7 @@ export function PdfPage(props) {
     pixelTransform,
     renderer,
     lazy = false,
+    textLayer = true,
     children,
     onRender,
     onError,
@@ -50,6 +52,18 @@ export function PdfPage(props) {
   const size = doc ? doc.getPageSize(page) : { width: 612, height: 792 };
   const width = cssWidth || size.width * scale;
   const height = cssHeight || size.height * scale;
+
+  const textRef = useRef(null);
+  useEffect(() => {
+    const host = textRef.current;
+    if (!host) return;
+    host.replaceChildren();
+    if (!doc || textLayer === false) return;
+    const size = doc.getPageSize(page);
+    host.appendChild(buildTextLayer(doc.getText(page), {
+      scale, height: size.height, boxY0: size.boxY0,
+    }));
+  }, [doc, page, scale, textLayer, width, height]);
 
   const reported = useRef(null);
   useEffect(() => {
@@ -76,6 +90,7 @@ export function PdfPage(props) {
         aria-label={`Page ${page + 1}`}
         role="img"
       />
+      <div className="wpdf-page__text" ref={textRef} aria-hidden={textLayer === false} />
       {!stats && !error && (placeholder || (rendering ? null : null))}
       {error && (
         <div className="wpdf-page__placeholder" style={{ position: 'absolute', inset: 0 }}>
