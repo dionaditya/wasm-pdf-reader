@@ -1610,7 +1610,31 @@ bool Renderer::renderPage(int pageIndex, double scale, Image& out, RenderStats* 
     int dw = (int)lround((swap ? ph : pw) * scale);
     int dh = (int)lround((swap ? pw : ph) * scale);
     if (dw <= 0 || dh <= 0) return false;
-    if ((long long)dw * dh > 40 * 1000 * 1000) return false;
+    err.clear();
+    const long long px = (long long)dw * dh;
+    if (px > 40 * 1000 * 1000) {
+        char b[160];
+        snprintf(b, sizeof b,
+                 "page needs %dx%d px (%.1f MP) at this scale; the renderer caps a page at 40 MP",
+                 dw, dh, px / 1e6);
+        err = b;
+        return false;
+    }
+    // Probe the heap before vector::assign: with -fno-exceptions an allocation
+    // failure there aborts the module instead of returning false.
+    {
+        size_t need = (size_t)px * 4;
+        void* probe = malloc(need);
+        if (!probe) {
+            char b[160];
+            snprintf(b, sizeof b,
+                     "not enough memory for a %dx%d px page (%.0f MB); the wasm heap could not grow",
+                     dw, dh, need / 1048576.0);
+            err = b;
+            return false;
+        }
+        free(probe);
+    }
 
     Canvas cv;
     cv.init(dw, dh);

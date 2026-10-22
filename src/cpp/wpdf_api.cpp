@@ -202,7 +202,7 @@ WPDF_EXPORT int wpdf_render_page(void* handle, int page, double scale) {
     pdf::RenderStats st;
     pdf::Image img;
     if (!r.renderPage(page, scale, img, &st)) {
-        gLastError = "render failed (page too large at this scale?)";
+        gLastError = r.lastError().empty() ? "render failed" : "render failed: " + r.lastError();
         return 0;
     }
     gBitmap.rgba.swap(img.rgba);

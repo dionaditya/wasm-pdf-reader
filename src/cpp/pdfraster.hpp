@@ -43,8 +43,10 @@ public:
     const std::vector<TextItem>& textItems() const { return items; }
     int  lastPageW() const { return lastW; }
     int  lastPageH() const { return lastH; }
+    const std::string& lastError() const { return err; }
 private:
     Document* doc;
+    std::string err;
     int lastW = 0, lastH = 0;
     std::vector<TextItem> items;
 };
