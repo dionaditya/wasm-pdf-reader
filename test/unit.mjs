@@ -356,6 +356,27 @@ await check('CMaps: mixed 1-byte and 2-byte codespaces decode in order', async (
 });
 cjkDoc.close();
 
+// ── shared indirect objects (the reading side of a stream must survive reuse) ─
+const sharedDoc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', 'shared-xobject.pdf')));
+
+await check('shared image and form XObjects resolve on every page', async () => {
+  assert.equal(sharedDoc.pageCount, 2);
+  const shots = [];
+  for (let i = 0; i < 2; i++) {
+    const { imageData } = await sharedDoc.render(i, { scale: 1 });
+    shots.push(imageData);
+    assert.ok(inkRatio(imageData) > 0.05, `page ${i} should draw the shared image, got ink ${inkRatio(imageData)}`);
+  }
+  // Same streams, same pixels: a stream that lost its bytes on the second visit
+  // would show up here as a blank half-page.
+  const a = shots[0].data, b = shots[1].data;
+  assert.equal(a.length, b.length);
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) assert.fail(`page 1 differs from page 0 at byte ${i}`);
+  }
+});
+sharedDoc.close();
+
 // ── encryption ─────────────────────────────────────────────────────────────
 const encExpect = { 'enc-rc4.pdf': 'RC4 40/128', 'enc-aes128.pdf': 'AES-128', 'enc-aes256.pdf': 'AES-256' };
 for (const [file, label] of Object.entries(encExpect)) {
