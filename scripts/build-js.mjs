@@ -15,7 +15,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = join(root, 'src');
 const dist = join(root, 'dist');
 
-const coreFiles = ['index.js', 'document.js', 'jbig2.js', 'loader.js', 'mount.js', 'text.js'];
+const coreFiles = ['index.js', 'document.js', 'loader.js', 'mount.js', 'text.js'];
 const reactFiles = ['index.js', 'PdfReader.jsx', 'PdfPage.jsx', 'PdfToolbar.jsx', 'hooks.js'];
 
 // 1. clean the JS output only: dist/wasm comes from emcc
@@ -59,11 +59,6 @@ for (const [from, to] of [
   if (existsSync(join(src, from))) await cp(join(src, from), join(dist, to));
 }
 
-// 5b. JBIG2 decoder assets (pdf.js.jbig2, Apache-2.0; see jbig2/LICENSE_*).
-//     Copied verbatim: the glue resolves jbig2.wasm next to itself.
-await cp(join(src, 'js', 'jbig2'), join(dist, 'jbig2'), { recursive: true });
-// also under wasm/ for pages that copy only that directory
-await cp(join(src, 'js', 'jbig2'), join(dist, 'wasm', 'jbig2'), { recursive: true });
 
 // 6. fail loudly if the wasm module was never built
 if (!existsSync(join(dist, 'wasm', 'pdf-reader.wasm'))) {

@@ -1,3 +1,4 @@
+#include "jbig2native.hpp"
 #include "pdfdoc.hpp"
 
 #include "jpx-decoder.hh"
@@ -1141,9 +1142,8 @@ bool Document::decodeStream(const ObjP& stm, std::string& out) {
                 for (auto& b : pix) b = (uint8_t)~b;
             out.assign((const char*)pix.data(), pix.size());
         } else if (fn == "JBIG2Decode") {
-            // Bi-level scans are decoded by the host (see wpdf_api.h); reaching
-            // here means the caller did not supply a bitmap.
-            warn("JBIG2 image was not decoded by the host");
+            // Decoded before the generic filter chain, see decodeJbig2().
+            warn("JBIG2Decode must go through decodeJbig2");
             return false;
         } else if (fn == "JPXDecode") {
             warn("JPXDecode must go through decodeJpx (own geometry)");
@@ -1169,6 +1169,32 @@ bool Document::hasFilter(const ObjP& stm, const char* name) {
             if (r && r->t == O_NAME && r->str == name) return true;
         }
     return false;
+}
+
+bool Document::decodeJbig2(const ObjP& stm, std::vector<uint8_t>& pixels, int& w, int& h) {
+    w = h = 0;
+    if (!stm || !stm->isStream) return false;
+    w = (int)objNum(resolve(stm->get("Width")), 0);
+    h = (int)objNum(resolve(stm->get("Height")), 0);
+    if (w <= 0 || h <= 0) { warn("JBIG2 image without dimensions"); return false; }
+    if (w > 20000 || h > 20000) { warn("JBIG2 image too large"); return false; }
+
+    std::string raw = encrypted ? decryptStream(stm) : stm->raw;
+    std::string globals;
+    ObjP dp = resolve(stm->get("DecodeParms"));
+    if (!dp) dp = resolve(stm->get("DP"));
+    if (dp && dp->t == O_DICT) {
+        ObjP g = resolve(dp->get("JBIG2Globals"));
+        if (g && g->isStream) globals = encrypted ? decryptStream(g) : g->raw;
+    }
+    if (!pdf::jbig2Decode((const uint8_t*)raw.data(), raw.size(), w, h,
+                          globals.empty() ? nullptr : (const uint8_t*)globals.data(), globals.size(),
+                          pixels)) {
+        warn("JBIG2 decode failed");
+        w = h = 0;
+        return false;
+    }
+    return true;
 }
 
 bool Document::decodeJpx(const ObjP& stm, std::vector<uint8_t>& pixels,
@@ -1211,30 +1237,6 @@ bool Document::decodeJpx(const ObjP& stm, std::vector<uint8_t>& pixels,
 }
 
 // ─── externally decoded images ─────────────────────────────────────────────
-void Document::setExternalImage(int objNum, int w, int h, const uint8_t* data, size_t stride) {
-    if (objNum <= 0 || w <= 0 || h <= 0 || !data) return;
-    ExtImage img;
-    img.w = w; img.h = h;
-    img.bits.assign((const char*)data, stride * (size_t)h);
-    extImages[objNum] = std::move(img);
-    pendingImages.erase(objNum);
-}
-
-bool Document::imageBytes(int objNum, bool globals, std::string& out) {
-    ObjP o = obj(objNum);
-    if (!o || !o->isStream) return false;
-    ObjP src = o;
-    if (globals) {
-        ObjP dp = resolve(o->get("DecodeParms"));
-        if (!dp) dp = resolve(o->get("DP"));
-        if (!dp || dp->t != O_DICT) return false;
-        src = resolve(dp->get("JBIG2Globals"));
-        if (!src || !src->isStream) return false;
-    }
-    out = encrypted ? decryptStream(src) : src->raw;
-    return true;
-}
-
 // ─── page geometry ──────────────────────────────────────────────────────────
 void Document::pageSize(int idx, double& w, double& h, int& rotate) {
     w = 612; h = 792; rotate = 0;

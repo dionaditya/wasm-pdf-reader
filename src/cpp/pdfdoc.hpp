@@ -147,22 +147,14 @@ struct Document {
     bool hasFilter(const ObjP& stm, const char* name);
     // JPEG 2000 images carry their own geometry and component count, so they
     // bypass decodeStream (which cannot report dims back to the caller).
+    // JBIG2: decodes to 1 bpc, rows packed MSB-first (see cpp/jbig2native.cpp).
+    bool decodeJbig2(const ObjP& stm, std::vector<uint8_t>& pixels, int& w, int& h);
+
     bool decodeJpx(const ObjP& stm, std::vector<uint8_t>& pixels,
                    int& w, int& h, int& comps);
 
     // ── externally decoded images (JBIG2 comes from the JS decoder) ──────
     // 1 bpc DeviceGray bits, one bit per pixel, 1 = white, rows padded to a byte.
-    struct ExtImage { int w = 0, h = 0; std::string bits; };
-    std::map<int, ExtImage> extImages;
-    std::map<int, std::pair<int, int>> pendingImages;   // obj num -> (w, h)
-    const ExtImage* externalImage(int objNum) const {
-        auto it = extImages.find(objNum);
-        return it == extImages.end() ? nullptr : &it->second;
-    }
-    void setExternalImage(int objNum, int w, int h, const uint8_t* data, size_t stride);
-    // Raw (still compressed, already decrypted) bytes of an image XObject, or of
-    // its /JBIG2Globals stream.
-    bool imageBytes(int objNum, bool globals, std::string& out);
 
     // ── fonts ────────────────────────────────────────────────────────────
     Font* font(const ObjP& fontDict);

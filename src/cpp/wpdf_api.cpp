@@ -40,7 +40,6 @@ struct DocHandle {
     std::string textJson;
     std::string error;
     int textPage = -1;
-    std::string imageBytesCache;
 
     void reset(int pageCount) {
         text.clear();
@@ -361,64 +360,6 @@ WPDF_EXPORT const char* wpdf_page_links_json(void* handle, int page) {
     return out.c_str();
 }
 
-// ─── externally decoded images (JBIG2) ──────────────────────────────────────
-// The module ships no JBIG2 decoder: the JS side owns a dedicated one and hands
-// the finished bitmap back. A render that meets a JBIG2 image paints a hole and
-// records it here; the caller decodes each entry, uploads it, and renders again.
-WPDF_EXPORT const char* wpdf_pending_images_json(void* handle) {
-    static std::string out;
-    DocHandle* h = H(handle);
-    out = "[";
-    if (h) {
-        bool first = true;
-        for (auto& kv : h->doc.pendingImages) {
-            if (!first) out += ',';
-            first = false;
-            out += "{\"obj\":";
-            out += std::to_string(kv.first);
-            out += ",\"width\":";
-            out += std::to_string(kv.second.first);
-            out += ",\"height\":";
-            out += std::to_string(kv.second.second);
-            out += '}';
-        }
-    }
-    out += ']';
-    return out.c_str();
-}
-
-WPDF_EXPORT void wpdf_clear_pending_images(void* handle) {
-    DocHandle* h = H(handle);
-    if (h) h->doc.pendingImages.clear();
-}
-
-// Raw stream bytes (still JBIG2-encoded, already decrypted) for one image or
-// its /JBIG2Globals stream. Valid until the next call on this handle.
-WPDF_EXPORT const void* wpdf_image_bytes(void* handle, int objNum, int globals) {
-    DocHandle* h = H(handle);
-    if (!h) return nullptr;
-    std::string buf;
-    if (!h->doc.imageBytes(objNum, globals != 0, buf)) return nullptr;
-    h->imageBytesCache = std::move(buf);
-    return h->imageBytesCache.data();
-}
-
-WPDF_EXPORT int wpdf_image_bytes_len(void* handle) {
-    DocHandle* h = H(handle);
-    return h ? (int)h->imageBytesCache.size() : 0;
-}
-
-// Hand a decoded 1-bpc bitmap (1 = white, rows padded to a byte) back to the
-// document; the next render of any page using that XObject will use it.
-WPDF_EXPORT int wpdf_set_image(void* handle, int objNum, int width, int height,
-                               const void* bits, int stride) {
-    DocHandle* h = H(handle);
-    if (!h || !bits || width <= 0 || height <= 0 || stride < (width + 7) / 8) return 0;
-    h->doc.setExternalImage(objNum, width, height, (const uint8_t*)bits, (size_t)stride);
-    return 1;
-}
-
-// Host builds (tests, node) need a free() for buffers JS allocated.
 WPDF_EXPORT void* wpdf_alloc(size_t n) { return malloc(n); }
 WPDF_EXPORT void wpdf_free(void* p) { free(p); }
 

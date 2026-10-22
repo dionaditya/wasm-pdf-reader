@@ -1157,17 +1157,14 @@ void Interp::drawImage(ObjP io, GState& gs) {
         }
     }
     std::string raw;
-    // JBIG2 is decoded outside the module (see wpdf_api.h): prefer an image the
-    // host has already supplied, otherwise ask for it and paint nothing yet.
-    const pdf::Document::ExtImage* ext = doc->externalImage(io->objNum);
-    if (ext) {
-        iw = ext->w; ih = ext->h;
+    if (doc->hasFilter(io, "JBIG2Decode")) {
+        // Bi-level scans: PDFium's decoder, compiled into this module.
+        std::vector<uint8_t> pix;
+        int jw = 0, jh = 0;
+        if (!doc->decodeJbig2(io, pix, jw, jh)) { st->note("image filter (JBIG2)"); return; }
+        iw = jw; ih = jh;
         ncomp = 1; bpc = 1;
-        raw = ext->bits;
-    } else if (doc->hasFilter(io, "JBIG2Decode")) {
-        doc->pendingImages[io->objNum] = {iw, ih};
-        st->note("jbig2 pending");
-        return;
+        raw.assign((const char*)pix.data(), pix.size());
     } else if (doc->hasFilter(io, "JPXDecode")) {
         // JPEG 2000 carries its own dimensions and component count.
         std::vector<uint8_t> pix;
@@ -1198,7 +1195,23 @@ void Interp::drawImage(ObjP io, GState& gs) {
             mw = (int)num(doc->resolve(mk->get("Width")), 0);
             mh = (int)num(doc->resolve(mk->get("Height")), 0);
             std::string mraw;
-            if (mbpc == 1 && mw > 0 && mh > 0 && doc->decodeStream(mk, mraw)) {
+            // A stencil mask can itself be a JBIG2 scan (common in FaxGroup
+            // scans, which carry a JBIG2 /Mask next to the page image).
+            bool mok = false;
+            if (mbpc == 1 && mw > 0 && mh > 0) {
+                if (doc->hasFilter(mk, "JBIG2Decode")) {
+                    std::vector<uint8_t> pix;
+                    int jw = 0, jh = 0;
+                    if (doc->decodeJbig2(mk, pix, jw, jh)) {
+                        mraw.assign((const char*)pix.data(), pix.size());
+                        mw = jw; mh = jh;
+                        mok = true;
+                    }
+                } else {
+                    mok = doc->decodeStream(mk, mraw);
+                }
+            }
+            if (mok) {
                 size_t stride = ((size_t)mw + 7) / 8;
                 if (mraw.size() >= stride * (size_t)mh) {
                     mask.resize((size_t)mw * mh);

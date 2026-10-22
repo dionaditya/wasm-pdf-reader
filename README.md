@@ -41,10 +41,10 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   Images larger than the destination are box-averaged, so a 5000 px scan drawn
   at 600 px stays readable instead of aliasing.
 - **Images** — Flate, DCT (JPEG), CCITT G3/G4 fax, JPEG 2000, and JBIG2.
-  JBIG2 ships as a separate 104 KB wasm module (PDFium's decoder, via
-  `pdf.js.jbig2`) that is only loaded when a document actually contains a scan:
-  the render reports the images it cannot decode, the host decodes them, and the
-  page renders once more. Decoded bitmaps are cached per object.
+  PDFium's JBIG2 and fax decoders are translated to C with `wasm2c` and linked
+  into `pdf-reader.wasm`, so scans decode in the same pass as everything else —
+  no second binary, no JS hand-off, no re-render. Stencil `/Mask` streams decode
+  through the same path.
 - **Fonts** — TrueType (`/FontFile2`), bare CFF and CID-keyed CFF
   (`/FontFile3 /Type1C`, `/CIDFontType0C`) through an own Type2 interpreter, and
   sfnt-wrapped `/OpenType`. CID fonts resolve glyphs through `/CIDToGIDMap` or
@@ -267,7 +267,7 @@ coverage and navigation, hashes each page bitmap, and writes the screenshots in
 
 ```
 src/cpp/            reader + rasterizer, CFF/Type2, JPEG 2000, annotations, C ABI
-src/js/jbig2/       vendored PDFium JBIG2 wasm module (Apache-2.0)
+src/cpp/jbig2gen/   PDFium JBIG2/fax decoder, generated from wasm by wasm2c
 src/js/             loader, PdfDocument, vanilla viewer, text helpers
 src/js/react/       PdfReader, PdfPage, PdfToolbar, hooks
 src/types/          hand-written .d.ts for both entry points
