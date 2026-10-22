@@ -241,4 +241,23 @@ await check('links: pages without annotations report none', () => {
 });
 linksDoc.close();
 
+// ── encryption ─────────────────────────────────────────────────────────────
+const encExpect = { 'enc-rc4.pdf': 'RC4 40/128', 'enc-aes128.pdf': 'AES-128', 'enc-aes256.pdf': 'AES-256' };
+for (const [file, label] of Object.entries(encExpect)) {
+  await check(`${label}: opens with an empty user password and renders`, async () => {
+    const doc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', file)));
+    const text = doc.getPageText(0);
+    assert.ok(text.includes('Encryption test'), `${label} text should decrypt`);
+    const { imageData } = await doc.render(0, { scale: 1 });
+    assert.ok(inkRatio(imageData) > 0.01, `${label} page should have ink`);
+    assert.equal(doc.warnings.length, 0);
+    doc.close();
+  });
+}
+
+await check('AES-256 with a user password fails with a clear message', async () => {
+  const bytes = await readFile(join(root, 'test', 'fixtures', 'enc-aes256-user.pdf'));
+  await assert.rejects(() => PdfDocument.open(bytes), /user password is required/);
+});
+
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

@@ -283,7 +283,9 @@ bool Document::load(const uint8_t* data, size_t len) {
 
     if (ObjP enc = resolve(trailer->get("Encrypt"))) {
         if (!setupEncryption(enc)) {
-            error = "encrypted PDF: password or unsupported handler";
+            // Keep the specific reason setupEncryption reported (wrong user
+            // password, unsupported handler, incomplete dict).
+            if (error.empty()) error = "encrypted PDF: password or unsupported handler";
             return false;
         }
     }
@@ -905,7 +907,7 @@ bool Document::setupEncryption(const ObjP& enc)
         };
         std::string check = (R == 5) ? pdfcrypto::sha256(pw + valSalt) : hash2B(pw, valSalt, 6);
         if (check.compare(0, 32, U, 0, 32) != 0) {
-            warn("AES-256: wrong user password");
+            error = "encrypted PDF: a user password is required";
             return false;
         }
         // R6: the file key is random; /UE holds it encrypted under the intermediate key.
@@ -948,6 +950,31 @@ bool Document::setupEncryption(const ObjP& enc)
     std::string key = pdfcrypto::md5(h);
     if (R >= 3) for (int i = 0; i < 50; i++) key = pdfcrypto::md5(key.substr(0, (size_t)n));
     key.resize((size_t)n);
+
+    // Verify the (empty) user password against /U before trusting the key.
+    // Without this check a file that needs a user password derives a wrong key,
+    // every stream inflates to noise, and the viewer shows a blank page with
+    // "flate decode failed" instead of asking for the password.
+    {
+        std::string pad((const char*)kPad, 32);
+        std::string check;
+        if (R == 2) {
+            check = pdfcrypto::rc4(key, pad);
+        } else {
+            std::string step = pdfcrypto::rc4(key, pdfcrypto::md5(pad + id));
+            for (int i = 1; i <= 19; i++) {
+                std::string k2 = key;
+                for (auto& ch : k2) ch = (char)((unsigned char)ch ^ i);
+                step = pdfcrypto::rc4(k2, step);
+            }
+            check = step;
+        }
+        size_t need = (R == 2) ? 32 : 16;
+        if (uObj->str.size() < need || check.compare(0, need, uObj->str, 0, need) != 0) {
+            error = "encrypted PDF: a user password is required";
+            return false;
+        }
+    }
 
     // which filter protects streams? /V4 /V5 name a crypt filter in /CF
     bool aes = false;

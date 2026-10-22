@@ -1,8 +1,8 @@
 # wasm-pdf-reader
 
 A PDF reader in WebAssembly: it parses, rasterizes and extracts text from a PDF
-inside the browser tab. No server, no upload, no CDN — a ~1.5 MB module that a
-vanilla page or a React app can drive.
+inside the browser tab. No server, no upload, no CDN — a 1.8 MB module (0.9 MB
+gzipped) that a vanilla page or a React app can drive.
 
 Packaged as `@dionaditya/wasm-pdf-reader`. Try it without installing anything:
 [vanilla demo](https://dionaditya.github.io/wasm-pdf-reader/vanilla/) ·
@@ -21,20 +21,42 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   ASCII85/ASCIIHex/RunLength with PNG and TIFF predictors. Object-stream offsets
   are read relative to `/First`, which is how calibre, Acrobat and Ghostscript
   write them.
+- **Encryption** — Standard security handler: RC4 40/128-bit, AES-128 and
+  AES-256 (R5/R6). Files that open with an empty user password decrypt fully;
+  files that need a real user password fail with
+  `encrypted PDF: a user password is required` instead of a blank page.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
-  clipping, text with the standard-14 metrics, Type0/Identity-H with embedded
-  TrueType, Form and Image XObjects (Flate and baseline JPEG), inline images,
-  `/Rotate` pages. Software rasterizer with 4× vertical supersampling, returning
-  RGBA8.
+  clipping, text, Form and Image XObjects, inline images, `/Rotate` pages,
+  axial and radial shadings, `/SMask` soft masks and `/Mask` stencil masks.
+  Software rasterizer with 4× vertical supersampling, returning RGBA8.
+  Images larger than the destination are box-averaged, so a 5000 px scan drawn
+  at 600 px stays readable instead of aliasing.
+- **Images** — Flate, DCT (JPEG), CCITT G3/G4 fax, JPEG 2000, and JBIG2.
+  JBIG2 ships as a separate 104 KB wasm module (PDFium's decoder, via
+  `pdf.js.jbig2`) that is only loaded when a document actually contains a scan:
+  the render reports the images it cannot decode, the host decodes them, and the
+  page renders once more. Decoded bitmaps are cached per object.
+- **Fonts** — TrueType (`/FontFile2`), bare CFF and CID-keyed CFF
+  (`/FontFile3 /Type1C`, `/CIDFontType0C`) through an own Type2 interpreter, and
+  sfnt-wrapped `/OpenType`. CID fonts resolve glyphs through `/CIDToGIDMap` or
+  the CFF charset. Embedded subsets that ship without a `cmap` table (common for
+  Arabic and CJK) are patched with a synthetic one instead of falling back to a
+  substitute face. Advances come from `/W`, falling back to the face's `hmtx`.
+- **Annotations** — link annotations (`/URI`, `/GoTo`, direct `/Dest` and named
+  destinations) are exposed as data and rendered as clickable overlays; other
+  annotations are drawn from their `/AP` appearance streams, which is where
+  signatures, stamps and meterai actually live.
 - **Text layer** — glyph runs with page-space boxes, so you can select, copy,
   search and draw highlights without a second parser.
 - **No network** — the wasm binary loads from your own origin; the file never
   leaves the tab.
 
-Not supported (deliberately, not silently approximated): encryption, CFF/Type1
-glyph programs (those fall back to a substituted face), JPX/JBIG2 images,
-patterns, soft masks and annotations. A viewer can read `document.warnings` to
-surface what was skipped.
+Not supported, and reported through `document.warnings` rather than silently
+approximated: text shaping for scripts that are not stored pre-shaped (Arabic,
+Indic), Type3 fonts, mesh shadings (4–7), transparency groups and blend modes,
+`/SMask` on form XObjects, non-Identity CMaps, outlines/bookmarks, form fields
+and XFA, public-key encryption, and ranged/streamed loading (the whole file is
+resident in wasm memory).
 
 ## Install
 
@@ -108,7 +130,8 @@ export default function Preview({ file }) {
 | `toolbar` | `false`, a node, or `(api) => node` |
 | `components` | replace `Page` and `Toolbar` with your own components |
 | `theme` | CSS variables: `bg`, `toolbarBg`, `accent`, `radius`, `pageShadow`, … |
-| `pageOverlay` | `(page, { document, scale }) => node` — annotations, watermarks |
+| `pageOverlay` | `(page, { document, scale }) => node` — your own overlays |
+| `onLink` | `(link, { document, goToPage, pageCount }) => boolean \| void` — link clicks; return `false` to keep the default |
 | `search` | a query; matching lines get highlight rectangles |
 | `pixelTransform` | post-process the RGBA of every page (invert, tint, watermark) |
 | `renderer` | swap the rendering backend entirely (`{ render(doc, page, opts) }`) |
@@ -130,6 +153,7 @@ PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename })
   .renderToCanvas(canvas, i, opts)
   .getText(i)                      // [{ text, x0, y0, x1, y1, ox, oy, adv, fs }]
   .getPageText(i) / .getAllText()
+  .getLinks(i)                     // [{ x0, y0, x1, y1, uri?, page? }]
   .search(query, { caseSensitive, limit, pages })    // [{ page, index, length, line, rects }]
   .boxToCss(box, i, scale)         // for overlays
   .close()
@@ -171,13 +195,14 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, geometry, raster, text, search (20 checks)
+npm test              # core: parse, raster, text, search, links, encryption (27 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:visual   # rewrite the pixel baseline after an intended change
 ```
 
-`test:unit` runs the real wasm module in Node against two generated fixtures:
+`test:unit` runs the real wasm module in Node against generated fixtures
+(including encrypted RC4/AES-128/AES-256 files and a JBIG2 scan) plus:
 `scripts/make-fixture.mjs` (three pages with text, vector art, an image XObject,
 clipping and a `/Rotate 90` page) and `scripts/make-objstm-fixture.mjs`, a
 calibre-shaped document whose catalog, page tree and font live in an object
@@ -189,7 +214,8 @@ coverage and navigation, hashes each page bitmap, and writes the screenshots in
 ## Layout
 
 ```
-src/cpp/            PDF reader and rasterizer (pdfdoc, pdfraster, C ABI)
+src/cpp/            reader + rasterizer, CFF/Type2, JPEG 2000, annotations, C ABI
+src/js/jbig2/       vendored PDFium JBIG2 wasm module (Apache-2.0)
 src/js/             loader, PdfDocument, vanilla viewer, text helpers
 src/js/react/       PdfReader, PdfPage, PdfToolbar, hooks
 src/types/          hand-written .d.ts for both entry points
@@ -202,4 +228,7 @@ dist/               published output (ESM + wasm)
 ## Licence
 
 MIT for this library. The embedded fallback faces are Liberation (SIL OFL),
-Carlito and Caladea (SIL OFL); `stb_truetype.h` is public domain / MIT.
+Carlito and Caladea (SIL OFL); `stb_truetype.h`/`stb_image.h` are public
+domain / MIT. Vendored Apache-2.0 and BSD-3-Clause components (PDFium's fax and
+JBIG2 decoders, nanopdf's JPEG 2000 and CFF tables) are listed with their notices
+in [THIRD-PARTY.md](THIRD-PARTY.md).
