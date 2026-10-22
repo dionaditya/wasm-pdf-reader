@@ -23,6 +23,8 @@
   --wpdf-gap: 8px;
   --wpdf-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --wpdf-highlight: rgba(255, 214, 0, 0.35);
+  --wpdf-link-hover: rgba(30, 120, 255, 0.14);
+  --wpdf-link-ring: rgba(30, 120, 255, 0.45);
 
   display: flex;
   flex-direction: column;
@@ -124,6 +126,21 @@
   pointer-events: none;
   line-height: normal;
 }
+/* Link annotations sit above the bitmap and below nothing else: transparent
+   until hovered or focused, so the page still reads as one image. */
+.wpdf-link {
+  position: absolute;
+  display: block;
+  border-radius: 2px;
+  cursor: pointer;
+  outline: none;
+}
+.wpdf-link:hover,
+.wpdf-link:focus-visible {
+  background: var(--wpdf-link-hover, rgba(30, 120, 255, 0.14));
+  box-shadow: 0 0 0 1px var(--wpdf-link-ring, rgba(30, 120, 255, 0.45));
+}
+
 .wpdf-highlight {
   position: absolute;
   background: var(--wpdf-highlight);

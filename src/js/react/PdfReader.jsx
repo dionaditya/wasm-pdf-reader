@@ -65,6 +65,7 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     renderError,
     renderEmpty,
     pageOverlay,
+    onLink,
     onLoad,
     onError,
     onRender,
@@ -198,6 +199,29 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
   const overlayFor = useCallback((index) => {
     const parts = [];
     const rects = [];
+    const links = doc ? doc.getLinks(index) : [];
+    if (links.length) {
+      parts.push(links.map((link, i) => {
+        const css = doc.boxToCss(link, index, effectiveScale);
+        const external = !!link.uri;
+        return (
+          <a
+            key={`ln-${i}`}
+            className="wpdf-link"
+            href={external ? link.uri : `#page-${link.page + 1}`}
+            target={external ? '_blank' : undefined}
+            rel={external ? 'noopener noreferrer' : undefined}
+            title={external ? link.uri : `Go to page ${link.page + 1}`}
+            style={{ left: css.left, top: css.top, width: css.width, height: css.height }}
+            onClick={(ev) => {
+              const handled = onLink?.(link, { document: doc, goToPage, pageCount });
+              if (handled === false) return;         // custom handler wants the event
+              if (!external && link.page >= 0) { ev.preventDefault(); goToPage(link.page); }
+            }}
+          />
+        );
+      }));
+    }
     if (searchHits.length) {
       for (const hit of searchHits) if (hit.page === index) rects.push(...hit.rects);
     }
@@ -222,7 +246,7 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     }
     if (pageOverlay) parts.push(pageOverlay(index, { document: doc, scale: effectiveScale, pageCount }));
     return parts;
-  }, [searchHits, highlights, pageOverlay, doc, effectiveScale, pageCount]);
+  }, [searchHits, highlights, pageOverlay, onLink, doc, effectiveScale, goToPage, pageCount]);
 
   // ── render ────────────────────────────────────────────────────────────────
   const pageSize = doc && pageCount ? doc.getPageSize(Math.min(page, pageCount - 1)) : null;

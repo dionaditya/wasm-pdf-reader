@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "cfffont.hpp"
+
 namespace pdf {
 
 enum ObjType { O_NULL, O_BOOL, O_INT, O_REAL, O_STR, O_NAME, O_ARR, O_DICT, O_REF };
@@ -82,7 +84,11 @@ struct Font {
     std::map<int, int> toUni;              // code -> unicode (from /ToUnicode)
     bool hasWidths = false;
     bool symbolic = false;                 // TrueType with no encoding: codes are glyph ids
-    std::string embedded;                  // /FontFile2 TrueType bytes when present
+    std::string embedded;                  // /FontFile2 TrueType or /FontFile3 OpenType bytes
+    std::shared_ptr<CffFont> cff;          // /FontFile3 Type1C or CIDFontType0C
+    bool isCid = false;                    // Type0 (2-byte codes, CID space)
+    std::map<int, int> codeToGid;          // simple fonts: byte code -> glyph id
+    std::map<int, int> cidToGid;           // Type0: /CIDToGIDMap stream (CID -> GID)
 
     int  unicodeFor(int code) const;       // 0 when unmapped
     double widthFor(int code) const;       // text space (1 em == 1000)
@@ -123,8 +129,36 @@ struct Document {
     int  pageCount() const { return (int)pages.size(); }
     void pageSize(int idx, double& w, double& h, int& rotate);
 
+    // ── link annotations ─────────────────────────────────────────────────
+    struct Link {
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // page space, y up
+        std::string uri;                          // /URI action
+        int page = -1;                            // /GoTo target, -1 when none
+    };
+    const std::vector<Link>& links(int idx);
+    int pageIndex(const ObjP& pageRef);            // ref -> index, -1 if unknown
+
     // ── stream decoding ──────────────────────────────────────────────────
     bool decodeStream(const ObjP& stm, std::string& out);
+    bool hasFilter(const ObjP& stm, const char* name);
+    // JPEG 2000 images carry their own geometry and component count, so they
+    // bypass decodeStream (which cannot report dims back to the caller).
+    bool decodeJpx(const ObjP& stm, std::vector<uint8_t>& pixels,
+                   int& w, int& h, int& comps);
+
+    // ── externally decoded images (JBIG2 comes from the JS decoder) ──────
+    // 1 bpc DeviceGray bits, one bit per pixel, 1 = white, rows padded to a byte.
+    struct ExtImage { int w = 0, h = 0; std::string bits; };
+    std::map<int, ExtImage> extImages;
+    std::map<int, std::pair<int, int>> pendingImages;   // obj num -> (w, h)
+    const ExtImage* externalImage(int objNum) const {
+        auto it = extImages.find(objNum);
+        return it == extImages.end() ? nullptr : &it->second;
+    }
+    void setExternalImage(int objNum, int w, int h, const uint8_t* data, size_t stride);
+    // Raw (still compressed, already decrypted) bytes of an image XObject, or of
+    // its /JBIG2Globals stream.
+    bool imageBytes(int objNum, bool globals, std::string& out);
 
     // ── fonts ────────────────────────────────────────────────────────────
     Font* font(const ObjP& fontDict);
@@ -137,6 +171,10 @@ struct Document {
     bool  parseXref(long off, int depth);
     void  reconstructXref();
     std::map<std::string, std::shared_ptr<Font>> fontCache;
+    std::map<int, std::vector<Link>> linkCache;
+    std::map<int, int> pageIndexByObj;
+    ObjP resolveDest(const ObjP& dest, int depth);
+    ObjP lookupNamedDest(const std::string& name);
     std::map<int, std::string> stmCache;   // decoded object streams, by obj num
     size_t stmCacheBytes = 0;
     std::set<int> xrefFree;                // objects deleted by a later update

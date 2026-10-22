@@ -290,6 +290,8 @@ export function mountPdfReader(target, options = {}) {
       if (token !== renderToken || destroyed) return;
       state.renderMs = Math.round(performance.now() - started);
       emit('onRender', { page: state.page, scale, ...out });
+      const linkEl = linkLayer(pageEl, state.page);
+      if (linkEl) pageEl.appendChild(linkEl);
       const hl = opts.highlights?.(state.page, scale) || [];
       if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));
     } catch (err) {
@@ -355,6 +357,39 @@ export function mountPdfReader(target, options = {}) {
       pageEl.dataset.rendered = '';
       if (token === renderToken) showError(err);
     }
+  }
+
+  // Link annotations: every /Link with a URI or an internal /GoTo becomes a
+  // transparent anchor over the page bitmap.
+  function linkLayer(pageEl, pageIndex) {
+    const links = state.doc.getLinks(pageIndex);
+    if (!links.length) return null;
+    const scale = effectiveScale();
+    const layer = el('div', 'wpdf-page__overlay');
+    for (const link of links) {
+      const css = state.doc.boxToCss(link, pageIndex, scale);
+      const a = el('a', 'wpdf-link');
+      a.style.left = `${css.left}px`;
+      a.style.top = `${css.top}px`;
+      a.style.width = `${css.width}px`;
+      a.style.height = `${css.height}px`;
+      if (link.uri) {
+        a.href = link.uri;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.title = link.uri;
+      } else if (link.page >= 0) {
+        a.href = `#page-${link.page + 1}`;
+        a.title = `Go to page ${link.page + 1}`;
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          goToPage(link.page);
+        });
+      }
+      a.setAttribute('aria-label', a.title || 'link');
+      layer.appendChild(a);
+    }
+    return layer;
   }
 
   function highlightLayer(hits, pageEl) {

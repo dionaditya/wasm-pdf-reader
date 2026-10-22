@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>wasm-pdf-reader selftest</title>
+<body>
+<pre id="log">running…</pre>
+<script type="module">
+const log = [];
+const out = document.getElementById('log');
+const say = (m) => { log.push(m); out.textContent = log.join('\n'); };
+window.addEventListener('error', (e) => say('window error: ' + e.message));
+window.addEventListener('unhandledrejection', (e) => say('rejection: ' + (e.reason && e.reason.message || e.reason)));
+try {
+  const { PdfDocument, version } = await import('/dist/index.js');
+  say('lib ' + version);
+  for (const f of ['/test/fixtures/cid_cff.pdf', '/test/fixtures/bug_jpx.pdf', '/test/fixtures/jb2globals.pdf']) {
+    try {
+      const doc = await PdfDocument.open(f, { filename: f });
+      const page = await doc.render(0, { scale: 1 });
+      const d = page.imageData.data;
+      let ink = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i] < 200) ink++;
+      say(`${f}: ${page.width}x${page.height} ink ${(ink / (page.width * page.height)).toFixed(4)} warnings ${JSON.stringify(doc.warnings.slice(0, 2))}`);
+      doc.close();
+    } catch (err) {
+      say(`${f}: FAILED ${err && err.message}`);
+    }
+  }
+} catch (err) {
+  say('load failed: ' + (err && err.message));
+}
+say('done');
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdio>
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -383,8 +384,103 @@ struct SubFace {
     stbtt_fontinfo info;
     const unsigned char* data = nullptr;
     unsigned int len = 0;
+    std::vector<unsigned char> owned;   // patched copy when the file needs one
     bool tried = false, ok = false;
 };
+
+// Many embedded CID TrueType subsets ship without a `cmap` table (the CID
+// mapping is the caller's job), and stb_truetype refuses to open a face
+// without one. Splice in an identity cmap so the glyph outlines become
+// reachable; selection already goes by glyph id, so the mapping itself is only
+// there to satisfy the loader.
+static std::vector<unsigned char> addIdentityCmap(const unsigned char* d, unsigned len) {
+    auto be16 = [&](size_t p) -> unsigned { return (d[p] << 8) | d[p + 1]; };
+    auto be32 = [&](size_t p) -> unsigned {
+        return ((unsigned)d[p] << 24) | ((unsigned)d[p + 1] << 16) |
+               ((unsigned)d[p + 2] << 8) | d[p + 3];
+    };
+    if (len < 12) return {};
+    int n = (int)be16(4);
+    if (n <= 0 || 12 + (size_t)n * 16 > len) return {};
+    struct Tab { char tag[5] = {0}; unsigned off = 0, len = 0; };
+    std::vector<Tab> tabs;
+    unsigned numGlyphs = 0;
+    for (int i = 0; i < n; i++) {
+        const unsigned char* r = d + 12 + (size_t)i * 16;
+        Tab t;
+        memcpy(t.tag, r, 4);
+        t.off = be32((size_t)(r - d) + 8);
+        t.len = be32((size_t)(r - d) + 12);
+        if (t.off > len || t.off + t.len > len) return {};
+        if (memcmp(t.tag, "cmap", 4) == 0) return {};
+        if (memcmp(t.tag, "maxp", 4) == 0 && t.len >= 6) numGlyphs = be16(t.off + 4);
+        tabs.push_back(t);
+    }
+    if (numGlyphs == 0 || numGlyphs > 65535) return {};
+
+    size_t cmapLen = 12 + 10 + (size_t)numGlyphs * 2;
+    int newN = n + 1;
+    int es = 0;
+    while ((1 << (es + 1)) <= newN) es++;
+    unsigned searchRange = (unsigned)(16 * (1 << es));
+    unsigned rangeShift = (unsigned)(newN * 16) - searchRange;
+
+    std::vector<unsigned char> out(12 + (size_t)newN * 16, 0);
+    memcpy(out.data(), d, 12);
+    out[4] = (unsigned char)(newN >> 8); out[5] = (unsigned char)(newN & 0xFF);
+    out[6] = (unsigned char)(searchRange >> 8); out[7] = (unsigned char)(searchRange & 0xFF);
+    out[8] = (unsigned char)(es >> 8); out[9] = (unsigned char)(es & 0xFF);
+    out[10] = (unsigned char)(rangeShift >> 8); out[11] = (unsigned char)(rangeShift & 0xFF);
+
+    size_t dirPos = 12;
+    for (auto& t : tabs) {
+        size_t at = (out.size() + 3) & ~(size_t)3;
+        out.resize(at + t.len);
+        memcpy(out.data() + at, d + t.off, t.len);
+        // table record: tag, checkSum, offset, length
+        memcpy(out.data() + dirPos, t.tag, 4);
+        out[dirPos + 8] = (unsigned char)(at >> 24); out[dirPos + 9] = (unsigned char)(at >> 16);
+        out[dirPos + 10] = (unsigned char)(at >> 8); out[dirPos + 11] = (unsigned char)at;
+        out[dirPos + 12] = (unsigned char)(t.len >> 24); out[dirPos + 13] = (unsigned char)(t.len >> 16);
+        out[dirPos + 14] = (unsigned char)(t.len >> 8); out[dirPos + 15] = (unsigned char)t.len;
+        dirPos += 16;
+    }
+    size_t cmapAt = (out.size() + 3) & ~(size_t)3;
+    out.resize(cmapAt + cmapLen, 0);
+    unsigned char* cm = out.data() + cmapAt;
+    memcpy(cm, "cmap", 0);
+    cm[2] = 0; cm[3] = 1;            // one subtable
+    cm[4] = 0; cm[5] = 3; cm[6] = 0; cm[7] = 1;   // (3,1) Windows Unicode BMP
+    cm[8] = 0; cm[9] = 0; cm[10] = 0; cm[11] = 12;
+    unsigned char* sub = cm + 12;
+    sub[0] = 0; sub[1] = 6;                                  // format 6
+    unsigned subLen = 10 + numGlyphs * 2;
+    sub[2] = (unsigned char)(subLen >> 8); sub[3] = (unsigned char)(subLen & 0xFF);
+    sub[4] = 0; sub[5] = 0;                                  // language
+    sub[6] = 0; sub[7] = 0;                                  // firstCode
+    sub[8] = (unsigned char)(numGlyphs >> 8); sub[9] = (unsigned char)(numGlyphs & 0xFF);
+    for (unsigned g = 0; g < numGlyphs; g++) {
+        sub[10 + g * 2] = (unsigned char)(g >> 8);
+        sub[10 + g * 2 + 1] = (unsigned char)(g & 0xFF);
+    }
+    memcpy(out.data() + dirPos, "cmap", 4);
+    out[dirPos + 8] = (unsigned char)(cmapAt >> 24); out[dirPos + 9] = (unsigned char)(cmapAt >> 16);
+    out[dirPos + 10] = (unsigned char)(cmapAt >> 8); out[dirPos + 11] = (unsigned char)cmapAt;
+    out[dirPos + 12] = (unsigned char)(cmapLen >> 24); out[dirPos + 13] = (unsigned char)(cmapLen >> 16);
+    out[dirPos + 14] = (unsigned char)(cmapLen >> 8); out[dirPos + 15] = (unsigned char)cmapLen;
+    return out;
+}
+
+static bool openFace(SubFace& f, const unsigned char* data, unsigned int len) {
+    if (stbtt_InitFont(&f.info, data, 0)) { f.data = data; f.len = len; return true; }
+    std::vector<unsigned char> patched = addIdentityCmap(data, len);
+    if (patched.empty()) return false;
+    f.owned = std::move(patched);
+    if (!stbtt_InitFont(&f.info, f.owned.data(), 0)) return false;
+    f.data = f.owned.data();
+    f.len = (unsigned int)f.owned.size();
+    return true;
+}
 
 static SubFace gFaces[8];
 
@@ -409,9 +505,7 @@ static SubFace* faceByKey(const char* key) {
         f.tried = true;
         const PdfSubFont* spec = faceSpec(key);
         if (spec) {
-            f.data = spec->data;
-            f.len = spec->len;
-            f.ok = stbtt_InitFont(&f.info, f.data, 0) != 0;
+            f.ok = openFace(f, spec->data, spec->len);
         }
     }
     return f.ok ? &f : nullptr;
@@ -424,9 +518,7 @@ static SubFace* faceFromData(const unsigned char* data, unsigned int len) {
         if (slots[i].data == data) return slots[i].ok ? &slots[i] : nullptr;
     if (count >= 24) return nullptr;
     SubFace& f = slots[count++];
-    f.data = data;
-    f.len = len;
-    f.ok = stbtt_InitFont(&f.info, data, 0) != 0;
+    f.ok = openFace(f, data, len);
     return f.ok ? &f : nullptr;
 }
 
@@ -652,6 +744,27 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
     SubFace* face = fp.primary ? fp.primary : fp.fallback;
     if (!face) return;
     auto glyphFor = [&](int code, int uni, SubFace*& chosen) -> int {
+        // CID fonts index glyphs by CID: use the explicit map, the CFF
+        // charset, or Identity (CID == GID), in that order.
+        if (font->isCid) {
+            int g = -1;
+            auto it = font->cidToGid.find(code);
+            if (it != font->cidToGid.end()) g = it->second;
+            else if (font->cff) g = font->cff->gidForCid(code);
+            else g = code;
+            if (g < 0) return 0;
+            if (font->cff) { chosen = face; return g < font->cff->numGlyphs() ? g : 0; }
+            if (fp.primary && g < fp.primary->info.numGlyphs) { chosen = fp.primary; return g; }
+            if (font->embedded.empty()) return 0;
+            chosen = face;
+            return g;
+        }
+        // Simple CFF font: the code -> GID table was built from /Encoding.
+        if (!font->codeToGid.empty()) {
+            auto it = font->codeToGid.find(code);
+            chosen = face;
+            return it == font->codeToGid.end() ? 0 : it->second;
+        }
         SubFace* cands[2] = {fp.primary, fp.fallback};
         for (int c = 0; c < 2; c++) {
             SubFace* f = cands[c];
@@ -685,7 +798,47 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
         Mat trm = Mat(fs * th, 0, 0, fs, 0, rise).mul(tmBase).mul(gs.ctm);
         Mat toPage = trm.mul(devToPage);
 
-        if (gid) {
+        float cbx0 = 0, cby0 = 0, cbx1 = 0, cby1 = 0;
+        bool haveCffBox = false;
+        if (gid && font->cff) {
+            // CFF / Type2 outlines: our interpreter hands back em units, which
+            // the text rendering matrix maps straight to device space.
+            std::vector<CffSeg> segs;
+            if (font->cff->glyphPath(gid, segs) && !segs.empty()) {
+                PathBuilder gpb(trm);
+                float minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+                for (const CffSeg& sg : segs) {
+                    if (sg.type == 0) gpb.moveTo(sg.x, sg.y);
+                    else if (sg.type == 1) gpb.lineTo(sg.x, sg.y);
+                    else gpb.curveTo(sg.x1, sg.y1, sg.x2, sg.y2, sg.x, sg.y);
+                    float px[3] = {(float)sg.x, (float)sg.x1, (float)sg.x2};
+                    float py[3] = {(float)sg.y, (float)sg.y1, (float)sg.y2};
+                    for (int k = 0; k < 3; k++) {
+                        if (sg.type == 0 && k > 0) break;
+                        if (sg.type == 1 && k > 0) break;
+                        minx = std::min(minx, px[k]); maxx = std::max(maxx, px[k]);
+                        miny = std::min(miny, py[k]); maxy = std::max(maxy, py[k]);
+                    }
+                }
+                gpb.close();
+                Polys polys = gpb.take();
+                if (!polys.empty()) {
+                    if (renderMode == 0 || renderMode == 2 || renderMode == 4 || renderMode == 6)
+                        FillPolys(*cv, polys, false, gs.fill[0], gs.fill[1], gs.fill[2], gs.fillA,
+                                  gs.clip ? gs.clip.get() : nullptr);
+                    if (renderMode == 1 || renderMode == 2 || renderMode == 5 || renderMode == 6) {
+                        Polys outline;
+                        float dlw = (float)(gs.lw * ctmScale(trm));
+                        for (auto& p : polys) StrokePolys(outline, p, dlw, gs.cap, true);
+                        FillPolys(*cv, outline, false, gs.stroke[0], gs.stroke[1], gs.stroke[2], gs.strokeA,
+                                  gs.clip ? gs.clip.get() : nullptr);
+                    }
+                    st->glyphs++;
+                }
+                cbx0 = minx; cby0 = miny; cbx1 = maxx; cby1 = maxy;
+                haveCffBox = (maxx > minx && maxy > miny);
+            }
+        } else if (gid) {
             // glyph outline in font units -> device, flattened
             stbtt_vertex* verts = nullptr;
             int nv = stbtt_GetGlyphShape(&face->info, gid, &verts);
@@ -754,7 +907,9 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
         // ── text layer ──────────────────────────────────────────────────
         if (out && !(renderMode == 3 || renderMode == 7)) {
             float gx0 = 0, gy0 = 0, gx1 = (float)font->widthFor(code) / 1000.f, gy1 = 0.7f;
-            if (gid) {
+            if (haveCffBox) {
+                gx0 = cbx0; gy0 = cby0; gx1 = cbx1; gy1 = cby1;
+            } else if (gid && !font->cff) {
                 int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
                 if (stbtt_GetGlyphBox(&face->info, gid, &bx0, &by0, &bx1, &by1)) {
                     // font units -> em: 1/unitsPerEm == ScaleForMappingEmToPixels(1.0)
@@ -959,10 +1114,52 @@ void Interp::drawImage(ObjP io, GState& gs) {
         }
     }
     std::string raw;
-    if (!doc->decodeStream(io, raw)) { st->note("image filter (DCT/JPX)"); return; }
+    // JBIG2 is decoded outside the module (see wpdf_api.h): prefer an image the
+    // host has already supplied, otherwise ask for it and paint nothing yet.
+    const pdf::Document::ExtImage* ext = doc->externalImage(io->objNum);
+    if (ext) {
+        iw = ext->w; ih = ext->h;
+        ncomp = 1; bpc = 1;
+        raw = ext->bits;
+    } else if (doc->hasFilter(io, "JBIG2Decode")) {
+        doc->pendingImages[io->objNum] = {iw, ih};
+        st->note("jbig2 pending");
+        return;
+    } else if (doc->hasFilter(io, "JPXDecode")) {
+        // JPEG 2000 carries its own dimensions and component count.
+        std::vector<uint8_t> pix;
+        int jw = 0, jh = 0, jc = 0;
+        if (!doc->decodeJpx(io, pix, jw, jh, jc)) { st->note("image filter (JPX)"); return; }
+        iw = jw; ih = jh;
+        if (jc > 0) ncomp = jc;
+        bpc = 8;
+        raw.assign((const char*)pix.data(), pix.size());
+    } else if (!doc->decodeStream(io, raw)) {
+        st->note("image filter (DCT/CCITT/JBIG2)"); return;
+    }
 
     size_t expected = (size_t)iw * ih * ncomp * bpc / 8;
     if (raw.size() < expected) { st->note("image data short"); return; }
+
+    // /SMask: a grey soft mask where 0 = fully transparent. Without it, logos
+    // and signature stamps paint as solid black rectangles.
+    std::vector<uint8_t> mask;
+    int mw = 0, mh = 0;
+    {
+        ObjP sm = doc->resolve(io->get("SMask"));
+        if (sm && sm->isStream) {
+            std::string mraw;
+            int mbpc = (int)num(doc->resolve(sm->get("BitsPerComponent")), 8);
+            mw = (int)num(doc->resolve(sm->get("Width")), 0);
+            mh = (int)num(doc->resolve(sm->get("Height")), 0);
+            if (mbpc == 8 && mw > 0 && mh > 0 && doc->decodeStream(sm, mraw) &&
+                mraw.size() >= (size_t)mw * mh) {
+                mask.assign((const uint8_t*)mraw.data(), (const uint8_t*)mraw.data() + (size_t)mw * mh);
+            } else {
+                mw = mh = 0;
+            }
+        }
+    }
 
     auto sample = [&](int x, int y, int c) -> float {
         if (x < 0) x = 0;
@@ -1009,6 +1206,13 @@ void Interp::drawImage(ObjP io, GState& gs) {
                 r = (1 - c) * (1 - k); g = (1 - m) * (1 - k); b = (1 - yy) * (1 - k);
             } else { r = sample(sx, sy, 0); g = sample(sx, sy, 1); b = sample(sx, sy, 2); }
             float a = 1.f;
+            if (!mask.empty() && mw > 0 && mh > 0) {
+                int mx = (int)((double)sx * mw / std::max(1, iw));
+                int my = (int)((double)sy * mh / std::max(1, ih));
+                if (mx < 0) mx = 0; if (mx >= mw) mx = mw - 1;
+                if (my < 0) my = 0; if (my >= mh) my = mh - 1;
+                a *= mask[(size_t)(mh - 1 - my) * mw + mx] * (1.f / 255.f);
+            }
             if (gs.clip) a *= (*gs.clip)[(size_t)y * cv->w + x] * (1.f / 255.f);
             if (a > 0) cv->blend(x, y, r, g, b, a);
         }
@@ -1167,8 +1371,11 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
             for (auto& p : polys) pb.polys.push_back(p);
             pathHasSegs = !polys.empty();
         } else if (op == "BT") {
+            // BT resets the text matrix only. Font, size, char/word spacing,
+            // horizontal scale, leading, rise and render mode belong to the
+            // graphics state and persist until changed — producers rely on that
+            // and emit the font once per style run, not once per text object.
             Tm = Mat(); Tlm = Mat();
-            Tfs = 0; Ttc = 0; Ttw = 0; Tth = 1; TL = 0; Ts = 0; Tr = 0;
         } else if (op == "ET") {
         } else if (op == "Tc") {
             Ttc = numArg(1, 0);
@@ -1380,6 +1587,68 @@ bool Renderer::renderPage(int pageIndex, double scale, Image& out, RenderStats* 
     in.textSink = &items;
     in.devToPage = ctm.inverse();
     in.exec(content, doc->resolve(page->get("Resources")), gs);
+
+    // Annotation appearance streams. Signatures, stamps (materai) and form
+    // widgets live only in /AP /N: the page content stream never draws them.
+    ObjP annots = doc->resolve(page->get("Annots"));
+    if (annots && annots->t == O_ARR) {
+        for (auto& entry : annots->arr) {
+            ObjP an = doc->resolve(entry);
+            if (!an || an->t != O_DICT) continue;
+            int flags = (int)num(doc->resolve(an->get("F")), 0);
+            if (flags & 0x02) continue;    // Hidden
+            if (flags & 0x20) continue;    // NoView
+            ObjP ap = doc->resolve(an->get("AP"));
+            if (!ap || ap->t != O_DICT) continue;
+            ObjP form = doc->resolve(ap->get("N"));
+            if (form && form->t == O_DICT && !form->isStream) {   // keyed by /AS
+                ObjP as = doc->resolve(an->get("AS"));
+                form = (as && as->t == O_NAME) ? doc->resolve(form->get(as->str.c_str())) : nullptr;
+            }
+            if (!form || !form->isStream) continue;
+            ObjP rect = doc->resolve(an->get("Rect"));
+            if (!rect || rect->t != O_ARR || rect->arr.size() < 4) continue;
+            double r[4];
+            for (int i = 0; i < 4; i++) r[i] = num(doc->resolve(rect->arr[i]), 0);
+            double rx0 = std::min(r[0], r[2]), rx1 = std::max(r[0], r[2]);
+            double ry0 = std::min(r[1], r[3]), ry1 = std::max(r[1], r[3]);
+            if (rx1 - rx0 < 0.5 || ry1 - ry0 < 0.5) continue;
+
+            double bx0 = 0, by0 = 0, bx1 = 1, by1 = 1;
+            ObjP bbox = doc->resolve(form->get("BBox"));
+            if (bbox && bbox->t == O_ARR && bbox->arr.size() == 4) {
+                // Corners may be written in any order (many producers emit
+                // [0 h w 0]); normalise or the height comes out negative and
+                // the appearance is dropped.
+                double v[4];
+                for (int i = 0; i < 4; i++) v[i] = num(doc->resolve(bbox->arr[i]), i < 2 ? 0 : 1);
+                bx0 = std::min(v[0], v[2]); bx1 = std::max(v[0], v[2]);
+                by0 = std::min(v[1], v[3]); by1 = std::max(v[1], v[3]);
+            }
+            double bw = bx1 - bx0, bh = by1 - by0;
+            if (bw <= 0 || bh <= 0) continue;
+            double sx = (rx1 - rx0) / bw, sy = (ry1 - ry0) / bh;
+            Mat place(sx, 0, 0, sy, rx0 - bx0 * sx, ry0 - by0 * sy);
+            ObjP fm = doc->resolve(form->get("Matrix"));
+            if (fm && fm->t == O_ARR && fm->arr.size() == 6) {
+                Mat fmat(num(doc->resolve(fm->arr[0]), 1), num(doc->resolve(fm->arr[1]), 0),
+                         num(doc->resolve(fm->arr[2]), 0), num(doc->resolve(fm->arr[3]), 1),
+                         num(doc->resolve(fm->arr[4]), 0), num(doc->resolve(fm->arr[5]), 0));
+                place = fmat.mul(place);
+            }
+            std::string adata;
+            if (!doc->decodeStream(form, adata)) continue;
+            GState ags = gs;
+            ags.ctm = place.mul(ctm);
+            Interp ai;
+            ai.doc = doc;
+            ai.cv = &cv;
+            ai.st = st;
+            ai.textSink = nullptr;
+            ai.devToPage = ags.ctm.inverse();
+            ai.exec(adata, doc->resolve(form->get("Resources")), ags);
+        }
+    }
 
     out.w = dw;
     out.h = dh;

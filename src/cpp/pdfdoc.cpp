@@ -1,5 +1,7 @@
 #include "pdfdoc.hpp"
 
+#include "jpx-decoder.hh"
+
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
 #define STBI_NO_STDIO
@@ -1062,14 +1064,98 @@ bool Document::decodeStream(const ObjP& stm, std::string& out) {
             if (!blackIs1)
                 for (auto& b : pix) b = (uint8_t)~b;
             out.assign((const char*)pix.data(), pix.size());
-        } else if (fn == "JPXDecode" || fn == "JBIG2Decode") {
-            warn("unsupported image filter " + fn);
+        } else if (fn == "JBIG2Decode") {
+            // Bi-level scans are decoded by the host (see wpdf_api.h); reaching
+            // here means the caller did not supply a bitmap.
+            warn("JBIG2 image was not decoded by the host");
+            return false;
+        } else if (fn == "JPXDecode") {
+            warn("JPXDecode must go through decodeJpx (own geometry)");
             return false;
         } else {
             warn("unknown filter " + fn);
             return false;
         }
     }
+    return true;
+}
+
+bool Document::hasFilter(const ObjP& stm, const char* name) {
+    if (!stm || !stm->isStream) return false;
+    ObjP f = stm->get("Filter");
+    if (!f) return false;
+    f = resolve(f);
+    if (!f) return false;
+    if (f->t == O_NAME) return f->str == name;
+    if (f->t == O_ARR)
+        for (auto& e : f->arr) {
+            ObjP r = resolve(e);
+            if (r && r->t == O_NAME && r->str == name) return true;
+        }
+    return false;
+}
+
+bool Document::decodeJpx(const ObjP& stm, std::vector<uint8_t>& pixels,
+                         int& w, int& h, int& comps) {
+    w = h = comps = 0;
+    if (!stm || !stm->isStream) return false;
+    std::string raw = encrypted ? decryptStream(stm) : stm->raw;
+    const uint8_t* p = (const uint8_t*)raw.data();
+    size_t n = raw.size();
+    if (!p || n < 8) { warn("JPX stream too short"); return false; }
+    // A JPEG 2000 file may be a JP2 container; the decoder wants the raw
+    // codestream, which lives in the "jp2c" box (may be preceded by others).
+    if (p[4] == 'j' && p[5] == 'P' && p[6] == ' ' && p[7] == ' ') {
+        size_t off = 0;
+        bool found = false;
+        while (off + 8 <= n) {
+            uint32_t len = ((uint32_t)p[off] << 24) | ((uint32_t)p[off + 1] << 16) |
+                           ((uint32_t)p[off + 2] << 8) | p[off + 3];
+            if (len == 0) len = (uint32_t)(n - off);
+            if (len < 8 || off + len > n) break;
+            if (p[off + 4] == 'j' && p[off + 5] == 'p' && p[off + 6] == '2' && p[off + 7] == 'c') {
+                p += off + 8;
+                n = len - 8;
+                found = true;
+                break;
+            }
+            off += len;
+        }
+        if (!found) { warn("JP2 container without jp2c box"); return false; }
+    }
+    nanopdf::jpx::JPXDecoder dec;
+    nanopdf::jpx::DecodeResult res = dec.decode(p, n);
+    if (!res.success || res.pixels.empty() || res.width == 0 || res.height == 0) {
+        warn("JPX decode failed" + (res.error.empty() ? std::string() : (": " + res.error)));
+        return false;
+    }
+    w = (int)res.width; h = (int)res.height; comps = (int)res.num_components;
+    pixels.swap(res.pixels);
+    return true;
+}
+
+// ─── externally decoded images ─────────────────────────────────────────────
+void Document::setExternalImage(int objNum, int w, int h, const uint8_t* data, size_t stride) {
+    if (objNum <= 0 || w <= 0 || h <= 0 || !data) return;
+    ExtImage img;
+    img.w = w; img.h = h;
+    img.bits.assign((const char*)data, stride * (size_t)h);
+    extImages[objNum] = std::move(img);
+    pendingImages.erase(objNum);
+}
+
+bool Document::imageBytes(int objNum, bool globals, std::string& out) {
+    ObjP o = obj(objNum);
+    if (!o || !o->isStream) return false;
+    ObjP src = o;
+    if (globals) {
+        ObjP dp = resolve(o->get("DecodeParms"));
+        if (!dp) dp = resolve(o->get("DP"));
+        if (!dp || dp->t != O_DICT) return false;
+        src = resolve(dp->get("JBIG2Globals"));
+        if (!src || !src->isStream) return false;
+    }
+    out = encrypted ? decryptStream(src) : src->raw;
     return true;
 }
 
@@ -1392,6 +1478,23 @@ Font* Document::font(const ObjP& fontDict) {
             std::string prog;
             if (decodeStream(ff2, prog) && prog.size() > 100) f->embedded = prog;
         }
+        // PostScript-flavoured embeds: bare CFF (Type1C / CIDFontType0C) needs
+        // our own Type2 interpreter; an /OpenType sfnt can go to stb_truetype.
+        ObjP ff3 = resolve(desc->get("FontFile3"));
+        if (ff3 && ff3->isStream) {
+            std::string prog;
+            if (decodeStream(ff3, prog) && prog.size() > 16) {
+                std::string sub = objName(resolve(ff3->get("Subtype")));
+                bool bareCff = (uint8_t)prog[0] == 1 && (uint8_t)prog[1] == 0;
+                if (sub == "Type1C" || sub == "CIDFontType0C" || (sub.empty() && bareCff)) {
+                    auto cf = std::make_shared<CffFont>();
+                    if (cf->parse((const uint8_t*)prog.data(), prog.size())) f->cff = cf;
+                    else warn("CFF font failed to parse: " + f->base);
+                } else {
+                    f->embedded = prog;
+                }
+            }
+        }
     }
 
     ObjP enc = resolve(fd->get("Encoding"));
@@ -1416,6 +1519,34 @@ Font* Document::font(const ObjP& fontDict) {
     // A TrueType face that ships without /Encoding and /ToUnicode is symbolic:
     // its byte codes are glyph indices, not characters (Office/plot outputs do this).
     if (f->subtype == "TrueType" && !enc && !fd->get("ToUnicode")) f->symbolic = true;
+
+    // CID fonts index glyphs by CID, not by character code. Resolve the
+    // CID -> glyph mapping once, here, so the rasterizer can select glyphs
+    // without guessing through a cmap.
+    if (f->subtype == "Type0") {
+        f->isCid = true;
+        ObjP cm = resolve(descFont->get("CIDToGIDMap"));
+        if (cm && cm->isStream) {
+            std::string map;
+            if (decodeStream(cm, map)) {
+                for (size_t i = 0; i + 1 < map.size(); i += 2) {
+                    int gid = ((unsigned char)map[i] << 8) | (unsigned char)map[i + 1];
+                    if (gid) f->cidToGid[(int)(i / 2)] = gid;
+                }
+            }
+        }
+    } else if (f->cff) {
+        // Simple CFF font: byte code -> glyph name (/Encoding /Differences)
+        // -> glyph id from the CFF charset; fall back to the font's built-in
+        // encoding when the PDF side names nothing.
+        for (int c = 0; c < 256; c++) {
+            int gid = -1;
+            auto d = f->diff.find(c);
+            if (d != f->diff.end()) gid = f->cff->gidForName(d->second);
+            if (gid < 0) gid = f->cff->gidForCode(c);
+            if (gid >= 0) f->codeToGid[c] = gid;
+        }
+    }
 
     ObjP tu = resolve(fd->get("ToUnicode"));
     if (tu && tu->isStream) {

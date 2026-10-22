@@ -217,4 +217,28 @@ await check('object stream: pages rasterize with real ink', async () => {
 objStmDoc.close();
 
 
+// ── link annotations ───────────────────────────────────────────────────────
+const linksDoc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', 'links.pdf')));
+
+await check('links: /GoTo and /URI annotations are reported', () => {
+  const links = linksDoc.getLinks(0);
+  assert.equal(links.length, 2);
+  const goto = links.find((l) => l.page !== undefined);
+  const uri = links.find((l) => l.uri);
+  assert.equal(goto.page, 2, 'internal link targets page 3');
+  assert.equal(uri.uri, 'https://example.com/');
+  assert.ok(goto.x1 > goto.x0 && goto.y1 > goto.y0, 'rect has area');
+});
+
+await check('links: named destination resolves through /Names /Dests', () => {
+  const links = linksDoc.getLinks(1);
+  assert.equal(links.length, 1);
+  assert.equal(links[0].page, 2);
+});
+
+await check('links: pages without annotations report none', () => {
+  assert.deepEqual(linksDoc.getLinks(2), []);
+});
+linksDoc.close();
+
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

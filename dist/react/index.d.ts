@@ -102,6 +102,14 @@ export interface PdfReaderProps extends ModuleOptions {
   pageOverlay?: (page: number, info: {
     document: PdfDocument | null; scale: number; pageCount: number;
   }) => React.ReactNode;
+  /**
+   * Called when a link annotation is clicked. Return `false` to keep the
+   * default (open the URI / jump to the page) from running.
+   */
+  onLink?: (
+    link: import('./index.d.ts').LinkAnnotation,
+    info: { document: PdfDocument | null; goToPage: (page: number) => void; pageCount: number },
+  ) => boolean | void;
   onLoad?: (info: {
     document: PdfDocument | null;
     pageCount: number;

@@ -5,6 +5,7 @@
 // used from a worker, a test, a vanilla page or React.
 
 import { loadModule } from './loader.js';
+import { decodeJbig2 } from './jbig2.js';
 import { itemsToText, searchItems, boxToCss } from './text.js';
 
 // The wasm module owns a single page bitmap, so renders are serialised across
@@ -101,6 +102,54 @@ export class PdfDocument {
     this._closed = false;
     this._sizeCache = new Map();
     this._textCache = new Map();
+    this._imageCache = new Map();     // objNum -> { data, stride } decoded JBIG2
+    this._linkCache = new Map();
+  }
+
+  // ── JBIG2 ───────────────────────────────────────────────────────────────
+  // Bi-level scans are decoded by the vendored pdf.js.jbig2 module: the render
+  // paints a hole, reports the XObjects it could not decode, and we hand the
+  // finished bitmap back before rendering again. Decoded images are cached for
+  // the life of the document, so re-rendering a page costs nothing extra.
+  _imageStream(objNum, globals) {
+    const M = this.Module;
+    const ptr = M._wpdf_image_bytes(this._handle, objNum, globals ? 1 : 0);
+    if (!ptr) return null;
+    const len = M._wpdf_image_bytes_len(this._handle);
+    if (!len) return null;
+    return new Uint8Array(M.HEAPU8.buffer, ptr, len).slice();
+  }
+
+  async _resolveImages() {
+    const M = this.Module;
+    const json = M._wpdf_pending_images_json(this._handle);
+    const list = json ? JSON.parse(M.UTF8ToString(json)) : [];
+    if (!list.length) return false;
+    M._wpdf_clear_pending_images(this._handle);
+    let injected = false;
+    for (const item of list) {
+      const objNum = item.obj | 0;
+      let decoded = this._imageCache.get(objNum);
+      if (!decoded) {
+        const data = this._imageStream(objNum, false);
+        if (!data) continue;
+        const globals = this._imageStream(objNum, true);
+        try {
+          decoded = await decodeJbig2(data, item.width, item.height, globals);
+        } catch (err) {
+          this._warnings?.push?.(String(err));
+          continue;
+        }
+        this._imageCache.set(objNum, decoded);
+      }
+      const ptr = M._wpdf_alloc(decoded.data.length);
+      if (!ptr) continue;
+      M.HEAPU8.set(decoded.data, ptr);       // re-read after any growth
+      M._wpdf_set_image(this._handle, objNum, item.width, item.height, ptr, decoded.stride);
+      M._wpdf_free(ptr);
+      injected = true;
+    }
+    return injected;
   }
 
   /**
@@ -211,9 +260,16 @@ export class PdfDocument {
     const deviceScale = scale * dpr;
     const size = this.getPageSize(index);
 
-    return serialise(() => {
+    return serialise(async () => {
       this._assertOpen();
-      const ok = this.Module._wpdf_render_page(this._handle, index, deviceScale);
+      this.Module._wpdf_clear_pending_images(this._handle);
+      let ok = this.Module._wpdf_render_page(this._handle, index, deviceScale);
+      if (ok && this.Module._wpdf_pending_images_json) {
+        // A page with a JBIG2 scan: decode, upload, render once more.
+        await this._resolveImages().then((again) => {
+          if (again) ok = this.Module._wpdf_render_page(this._handle, index, deviceScale);
+        });
+      }
       if (!ok) {
         const msg = this.Module.UTF8ToString(this.Module._wpdf_last_error());
         throw new Error(`wasm-pdf-reader: ${msg || 'render failed'}`);
@@ -268,6 +324,19 @@ export class PdfDocument {
     const ctx = canvas.getContext('2d');
     ctx.putImageData(out.imageData, 0, 0);
     return out;
+  }
+
+  /**
+   * Link annotations on a page: `{ x0, y0, x1, y1, uri?, page? }`, page-space
+   * (y up, origin bottom-left). `page` is a zero-based internal target.
+   */
+  getLinks(index) {
+    this._assertOpen();
+    if (this._linkCache.has(index)) return this._linkCache.get(index);
+    const json = this.Module._wpdf_page_links_json(this._handle, index);
+    const links = json ? JSON.parse(this.Module.UTF8ToString(json)) : [];
+    this._linkCache.set(index, links);
+    return links;
   }
 
   /** The text layer of a page: glyph runs with page-space boxes. */
@@ -346,6 +415,8 @@ export class PdfDocument {
     if (this._closed) return;
     this._closed = true;
     this._textCache.clear();
+    this._imageCache.clear();
+    this._linkCache.clear();
     this._sizeCache.clear();
     this.Module._wpdf_close(this._handle);
     this._handle = 0;
