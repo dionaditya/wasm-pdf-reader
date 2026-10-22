@@ -22,9 +22,18 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   are read relative to `/First`, which is how calibre, Acrobat and Ghostscript
   write them.
 - **Encryption** — Standard security handler: RC4 40/128-bit, AES-128 and
-  AES-256 (R5/R6). Files that open with an empty user password decrypt fully;
-  files that need a real user password fail with
-  `encrypted PDF: a user password is required` instead of a blank page.
+  AES-256 (R5/R6). Pass the password as an option and it is tried as the user
+  password first, then as the owner password (R2–R4 via /O, R5/R6 via /OE with
+  /Perms verification):
+
+  ```js
+  const doc = await PdfDocument.open(bytes, { password: 'secret' });
+  ```
+
+  Files with no password open with `PdfDocument.open(bytes)`. A file that needs
+  one fails with `encrypted PDF: a user password is required` (or
+  `wrong password`), never a blank page. The demo prompts for the password once
+  when the reader asks for it.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
   clipping, text, Form and Image XObjects, inline images, `/Rotate` pages,
   axial and radial shadings, `/SMask` soft masks and `/Mask` stencil masks.
@@ -199,14 +208,15 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, encryption (27 checks)
+npm test              # core: parse, raster, text, search, links, encryption (36 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:visual   # rewrite the pixel baseline after an intended change
 ```
 
 `test:unit` runs the real wasm module in Node against generated fixtures
-(including encrypted RC4/AES-128/AES-256 files and a JBIG2 scan) plus:
+(including encrypted RC4/AES-128/AES-256 files — with and without passwords —
+and a JBIG2 scan) plus:
 `scripts/make-fixture.mjs` (three pages with text, vector art, an image XObject,
 clipping and a `/Rotate 90` page) and `scripts/make-objstm-fixture.mjs`, a
 calibre-shaped document whose catalog, page tree and font live in an object

@@ -460,10 +460,17 @@ export function mountPdfReader(target, options = {}) {
     setOverlay(messageNode(labels.loading, 'loading'));
     try {
       const previous = state.doc;
-      const doc = await PdfDocument.open(source, {
-        ...opts,
-        filename: filename || (typeof source === 'object' && 'name' in source ? source.name : ''),
-      });
+      const filename2 = filename || (typeof source === 'object' && 'name' in source ? source.name : '');
+      let doc;
+      try {
+        doc = await PdfDocument.open(source, { ...opts, filename: filename2 });
+      } catch (err) {
+        // Encrypted with a real user password: ask once, then let the error through.
+        if (!/user password is required/.test(err.message) || typeof prompt !== 'function') throw err;
+        const password = prompt('This PDF is password-protected. Enter the password:');
+        if (password === null) throw err;
+        doc = await PdfDocument.open(source, { ...opts, filename: filename2, password });
+      }
       previous?.close();
       if (destroyed) { doc.close(); return; }
       state.doc = doc;

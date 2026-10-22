@@ -260,4 +260,27 @@ await check('AES-256 with a user password fails with a clear message', async () 
   await assert.rejects(() => PdfDocument.open(bytes), /user password is required/);
 });
 
+for (const [file, label] of [
+  ['enc-rc4-pw.pdf', 'RC4'],
+  ['enc-aes128-pw.pdf', 'AES-128'],
+  ['enc-aes256-pw.pdf', 'AES-256'],
+]) {
+  const bytes = await readFile(join(root, 'test', 'fixtures', file));
+  await check(`${label}: opens with the user password`, async () => {
+    const doc = await PdfDocument.open(bytes, { password: 'secret' });
+    assert.ok(doc.getPageText(0).includes('Encryption test'));
+    const { imageData } = await doc.render(0, { scale: 1 });
+    assert.ok(inkRatio(imageData) > 0.01);
+    doc.close();
+  });
+  await check(`${label}: opens with the owner password`, async () => {
+    const doc = await PdfDocument.open(bytes, { password: 'owner' });
+    assert.ok(doc.getPageText(0).includes('Encryption test'));
+    doc.close();
+  });
+  await check(`${label}: rejects a wrong password`, async () => {
+    await assert.rejects(() => PdfDocument.open(bytes, { password: 'nope' }), /wrong password/);
+  });
+}
+
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

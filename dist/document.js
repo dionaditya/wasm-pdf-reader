@@ -155,16 +155,27 @@ export class PdfDocument {
   /**
    * Parse a PDF. The bytes are copied into wasm memory; the source can be released.
    * @param {ArrayBuffer|Uint8Array|Blob|File|string|URL|Response} source
-   * @param {import('./loader.js').ModuleOptions & {filename?: string}} [options]
+   * @param {import('./loader.js').ModuleOptions & {filename?: string, password?: string}} [options]
    * @returns {Promise<PdfDocument>}
    */
   static async open(source, options = {}) {
     const Module = await loadModule(options);
     const { ptr, size } = await copyIntoWasm(Module, source);
     let handle = 0;
+    const password = options.password ? String(options.password) : '';
+    let pwPtr = 0;
     try {
-      handle = Module._wpdf_open(ptr, size);
+      if (password) {
+        const pw = new TextEncoder().encode(password);
+        pwPtr = Module._wpdf_alloc(pw.length);
+        if (!pwPtr) throw new Error('out of memory');
+        Module.HEAPU8.set(pw, pwPtr);        // re-read the view: alloc may grow it
+        handle = Module._wpdf_open_pw(ptr, size, pwPtr, pw.length);
+      } else {
+        handle = Module._wpdf_open(ptr, size);
+      }
     } finally {
+      if (pwPtr) Module._wpdf_free(pwPtr);
       Module._wpdf_free(ptr);
     }
     if (!handle) {

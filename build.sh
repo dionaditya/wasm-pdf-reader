@@ -19,7 +19,7 @@ if [ "${1:-}" = "--debug" ]; then MODE="debug"; fi
 OUT_DIR="dist/wasm"
 mkdir -p "$OUT_DIR"
 
-EXPORTS='_wpdf_abi_version,_wpdf_engine_info,_wpdf_last_error,_wpdf_open,_wpdf_close,_wpdf_page_count,_wpdf_page_size,_wpdf_render_page,_wpdf_bitmap_ptr,_wpdf_bitmap_width,_wpdf_bitmap_height,_wpdf_page_text_json,_wpdf_page_stats,_wpdf_info_json,_wpdf_warnings_json,_wpdf_alloc,_wpdf_free,_malloc,_free,_wpdf_pending_images_json,_wpdf_clear_pending_images,_wpdf_image_bytes,_wpdf_image_bytes_len,_wpdf_set_image,_wpdf_page_links_json'
+EXPORTS='_wpdf_abi_version,_wpdf_engine_info,_wpdf_last_error,_wpdf_open,_wpdf_open_pw,_wpdf_close,_wpdf_page_count,_wpdf_page_size,_wpdf_render_page,_wpdf_bitmap_ptr,_wpdf_bitmap_width,_wpdf_bitmap_height,_wpdf_page_text_json,_wpdf_page_stats,_wpdf_info_json,_wpdf_warnings_json,_wpdf_alloc,_wpdf_free,_malloc,_free,_wpdf_pending_images_json,_wpdf_clear_pending_images,_wpdf_image_bytes,_wpdf_image_bytes_len,_wpdf_set_image,_wpdf_page_links_json'
 RUNTIME='HEAPU8,HEAPU32,UTF8ToString,stringToUTF8,ccall,cwrap,getValue,setValue'
 
 FLAGS=(

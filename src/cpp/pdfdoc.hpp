@@ -110,7 +110,10 @@ struct Document {
     std::string error;
     bool  loaded = false;
 
-    // Standard security handler (RC4 / AES-128). Empty user password only.
+    // Password to try against the Standard security handler (user, else owner).
+    std::string password;
+
+    // Standard security handler: RC4 40/128, AES-128, AES-256 (R5/R6).
     bool  encrypted = false;
     bool  aesStreams = false;
     std::string encKey;                    // file key

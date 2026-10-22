@@ -129,13 +129,22 @@ WPDF_EXPORT const char* wpdf_engine_info() {
 
 WPDF_EXPORT const char* wpdf_last_error() { return gLastError.c_str(); }
 
+WPDF_EXPORT void* wpdf_open_pw(const uint8_t* data, int len, const char* pw, int pwLen);
+
 // Parse a PDF held in wasm memory. Returns a handle, or nullptr on failure.
 WPDF_EXPORT void* wpdf_open(const uint8_t* data, int len) {
+    return wpdf_open_pw(data, len, nullptr, 0);
+}
+
+// Same, but tries `pw` against the document's encryption handler (user first,
+// then owner). An empty password is the same as wpdf_open.
+WPDF_EXPORT void* wpdf_open_pw(const uint8_t* data, int len, const char* pw, int pwLen) {
     if (!data || len <= 0) {
         gLastError = "empty document";
         return nullptr;
     }
     DocHandle* h = new DocHandle();
+    if (pw && pwLen > 0) h->doc.password.assign(pw, (size_t)pwLen);
     if (!h->doc.load(data, (size_t)len)) {
         gLastError = h->doc.error.empty() ? "cannot parse PDF" : h->doc.error;
         delete h;

@@ -878,16 +878,20 @@ bool Document::setupEncryption(const ObjP& enc)
     ObjP oObj = resolve(enc->get("O")), uObj = resolve(enc->get("U"));
     if (!oObj || !uObj || oObj->t != O_STR) { warn("encryption dict incomplete"); return false; }
 
+    const std::string& pw = password;             // caller-supplied, often empty
+    const std::string wrongPw = pw.empty()
+        ? "encrypted PDF: a user password is required"
+        : "encrypted PDF: wrong password";
+
     if (R >= 5) {
-        // ISO 32000-2: U = hash(pw + validation salt) || validation salt || key salt
-        std::string U = uObj->str;
-        if (U.size() < 48) { warn("AES-256 U entry short"); return false; }
-        std::string valSalt = U.substr(32, 8);
-        std::string keySalt = U.substr(40, 8);
-        std::string pw;                                  // empty user password
-        auto hash2B = [](const std::string& password, const std::string& salt, int rev) {
-            std::string K = pdfcrypto::sha256(password + salt);
-            std::string udata;
+        // ISO 32000-2: U/O = hash(pw + validation salt) || validation salt || key salt
+        std::string U = uObj->str, O = oObj->str;
+        if (U.size() < 48 || O.size() < 48) { warn("AES-256 U/O entry short"); return false; }
+        // Algorithm 2.B. The owner entry hashes over the 48-byte /U as well,
+        // which is why an owner password never validates without it.
+        auto hash2B = [](const std::string& password, const std::string& salt,
+                         const std::string& udata, int rev) {
+            std::string K = pdfcrypto::sha256(password + salt + udata);
             for (int i = 0; ; ++i) {
                 std::string K1;
                 std::string block = password + K + udata;
@@ -905,25 +909,48 @@ bool Document::setupEncryption(const ObjP& enc)
             }
             return K.substr(0, 32);
         };
-        std::string check = (R == 5) ? pdfcrypto::sha256(pw + valSalt) : hash2B(pw, valSalt, 6);
-        if (check.compare(0, 32, U, 0, 32) != 0) {
-            error = "encrypted PDF: a user password is required";
-            return false;
-        }
-        // R6: the file key is random; /UE holds it encrypted under the intermediate key.
-        std::string intermediate = (R == 5) ? pdfcrypto::sha256(pw + keySalt)
-                                            : hash2B(pw, keySalt, 6);
-        ObjP ueObj = resolve(enc->get("UE"));
-        if (!ueObj || ueObj->str.size() < 32) { warn("AES-256: missing /UE"); return false; }
+        auto hashFor = [&](const std::string& salt, const std::string& udata) {
+            return (R == 5) ? pdfcrypto::sha256(pw + salt + udata) : hash2B(pw, salt, udata, 6);
+        };
         std::string zeroIv(16, '\0');
-        encKey = pdfcrypto::aesCbcDecryptIv(intermediate, zeroIv, ueObj->str.substr(0, 32));
-        encN = 32; aesStreams = true; encDirectKey = true; encrypted = true;
-        return true;
+
+        // 1. the password may be the user password (or the file may have none)
+        if (hashFor(U.substr(32, 8), "").compare(0, 32, U, 0, 32) == 0) {
+            ObjP ueObj = resolve(enc->get("UE"));
+            if (!ueObj || ueObj->str.size() < 32) { warn("AES-256: missing /UE"); return false; }
+            std::string intermediate = hashFor(U.substr(40, 8), "");
+            encKey = pdfcrypto::aesCbcDecryptIv(intermediate, zeroIv, ueObj->str.substr(0, 32));
+            encN = 32; aesStreams = true; encDirectKey = true; encrypted = true;
+            return true;
+        }
+
+        // 2. …or the owner password, which unwraps /OE and is proven by /Perms
+        if (hashFor(O.substr(32, 8), U).compare(0, 32, O, 0, 32) == 0) {
+            ObjP oeObj = resolve(enc->get("OE"));
+            if (oeObj && oeObj->str.size() >= 32) {
+                std::string intermediate = hashFor(O.substr(40, 8), U);
+                std::string fk = pdfcrypto::aesCbcDecryptIv(intermediate, zeroIv, oeObj->str.substr(0, 32));
+                bool ok = true;
+                ObjP perms = resolve(enc->get("Perms"));
+                if (perms && perms->str.size() >= 16) {
+                    std::string dec = pdfcrypto::aesCbcDecryptIv(fk, zeroIv, perms->str.substr(0, 16));
+                    ok = dec.size() >= 12 && dec.compare(9, 3, "adb") == 0;
+                }
+                if (ok) {
+                    encKey = fk; encN = 32; aesStreams = true; encDirectKey = true; encrypted = true;
+                    return true;
+                }
+            }
+        }
+        error = wrongPw;
+        return false;
     }
 
+    // ── R2–R4: RC4 or AES-128, key derived from the padded password ──────────
     int n = (R == 2) ? 5 : std::max(5, std::min(16, lengthBits / 8));
     double pv = objNum(resolve(enc->get("P")), 0);
     uint32_t P = (uint32_t)(int64_t)pv;
+    std::string O = oObj->str;
 
     std::string id;
     if (trailer) {
@@ -933,29 +960,31 @@ bool Document::setupEncryption(const ObjP& enc)
             if (first && first->t == O_STR) id = first->str;
         }
     }
-
-    std::string pw(32, '\0');
-    memcpy(&pw[0], kPad, 32);                       // empty user password, padded
-    std::string h = pw + oObj->str;
-    h.push_back((char)( P        & 0xff));
-    h.push_back((char)((P >> 8)  & 0xff));
-    h.push_back((char)((P >> 16) & 0xff));
-    h.push_back((char)((P >> 24) & 0xff));
-    h += id;
+    bool meta = true;
     if (R >= 4) {
         ObjP em = resolve(enc->get("EncryptMetadata"));
-        bool meta = em ? (em->t == O_BOOL ? em->b : objNum(em, 1) != 0) : true;
-        if (!meta) h += std::string("\xff\xff\xff\xff", 4);
+        meta = em ? (em->t == O_BOOL ? em->b : objNum(em, 1) != 0) : true;
     }
-    std::string key = pdfcrypto::md5(h);
-    if (R >= 3) for (int i = 0; i < 50; i++) key = pdfcrypto::md5(key.substr(0, (size_t)n));
-    key.resize((size_t)n);
 
-    // Verify the (empty) user password against /U before trusting the key.
-    // Without this check a file that needs a user password derives a wrong key,
-    // every stream inflates to noise, and the viewer shows a blank page with
-    // "flate decode failed" instead of asking for the password.
-    {
+    auto padPassword = [](const std::string& in) {
+        std::string out = in.substr(0, 32);
+        if (out.size() < 32) out.append((const char*)kPad, 32 - out.size());
+        return out;
+    };
+    auto fileKey = [&](const std::string& padded) {
+        std::string h = padded + O;
+        h.push_back((char)( P        & 0xff));
+        h.push_back((char)((P >> 8)  & 0xff));
+        h.push_back((char)((P >> 16) & 0xff));
+        h.push_back((char)((P >> 24) & 0xff));
+        h += id;
+        if (R >= 4 && !meta) h += std::string("\xff\xff\xff\xff", 4);
+        std::string k = pdfcrypto::md5(h);
+        if (R >= 3) for (int i = 0; i < 50; i++) k = pdfcrypto::md5(k.substr(0, (size_t)n));
+        k.resize((size_t)n);
+        return k;
+    };
+    auto userPasswordMatches = [&](const std::string& key) {
         std::string pad((const char*)kPad, 32);
         std::string check;
         if (R == 2) {
@@ -970,10 +999,30 @@ bool Document::setupEncryption(const ObjP& enc)
             check = step;
         }
         size_t need = (R == 2) ? 32 : 16;
-        if (uObj->str.size() < need || check.compare(0, need, uObj->str, 0, need) != 0) {
-            error = "encrypted PDF: a user password is required";
-            return false;
+        return uObj->str.size() >= need && check.compare(0, need, uObj->str, 0, need) == 0;
+    };
+
+    // 1. user password (the common case: empty)
+    std::string key = fileKey(padPassword(pw));
+    if (userPasswordMatches(key)) {
+        // fall through to the crypt-filter probe below
+    } else {
+        // 2. owner password: /O decrypts to the padded user password
+        std::string ok = pdfcrypto::md5(padPassword(pw));
+        if (R >= 3) for (int i = 0; i < 50; i++) ok = pdfcrypto::md5(ok.substr(0, (size_t)n));
+        ok.resize((size_t)n);
+        std::string recovered = O.substr(0, 32);
+        if (R == 2) {
+            recovered = pdfcrypto::rc4(ok, recovered);
+        } else {
+            for (int i = 19; i >= 0; i--) {
+                std::string k2 = ok;
+                for (auto& ch : k2) ch = (char)((unsigned char)ch ^ i);
+                recovered = pdfcrypto::rc4(k2, recovered);
+            }
         }
+        key = fileKey(recovered);
+        if (!userPasswordMatches(key)) { error = wrongPw; return false; }
     }
 
     // which filter protects streams? /V4 /V5 name a crypt filter in /CF
