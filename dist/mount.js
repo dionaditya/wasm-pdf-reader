@@ -454,6 +454,18 @@ export function mountPdfReader(target, options = {}) {
     emit('onScaleChange', next);
   }
 
+  // Switch between one-page and continuous scrolling without remounting, which
+  // is what the demo used to do (and it lost scroll position and search hits).
+  function setContinuous(on) {
+    const next = !!on;
+    if (next === !!opts.continuous) return;
+    opts.continuous = next;
+    viewport.classList.toggle('wpdf-viewport--continuous', next);
+    state.pageEls = [];
+    if (state.doc) next ? renderContinuous() : renderSingle();
+    updateToolbar();
+  }
+
   async function setDocument(source, { page = 0, filename } = {}) {
     state.status = 'loading';
     state.error = null;
@@ -588,6 +600,8 @@ export function mountPdfReader(target, options = {}) {
     setTheme: (theme) => applyTheme(root, theme),
     setInverted: (on) => root.classList.toggle('wpdf-root--invert', !!on),
     search: (query, o) => (state.doc ? state.doc.search(query, o) : []),
+    setContinuous,
+    isContinuous: () => !!opts.continuous,
     rerender: () => (opts.continuous ? renderContinuous() : renderSingle()),
     destroy() {
       destroyed = true;
