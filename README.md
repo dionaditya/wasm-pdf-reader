@@ -356,8 +356,13 @@ dist/               published output (ESM + wasm)
 
 ## Licence
 
-MIT for this library. The embedded fallback faces are Liberation (SIL OFL),
-Carlito and Caladea (SIL OFL); `stb_truetype.h`/`stb_image.h` are public
-domain / MIT. Vendored Apache-2.0 and BSD-3-Clause components (PDFium's fax and
-JBIG2 decoders, nanopdf's JPEG 2000 and CFF tables) are listed with their notices
-in [THIRD-PARTY.md](THIRD-PARTY.md).
+MIT for this library. The engine's ~6,500 first-party lines sit on large vendored
+and generated components: PDFium's JBIG2/fax (Apache-2.0), nanopdf's JPEG 2000
+and CFF tables (Apache-2.0), `stb_truetype`/`stb_image` (MIT / public domain),
+wabt (BSD-2), `simde` (MIT), Adobe's CMaps (BSD-3), and eight metric-compatible
+font families — DejaVu (Bitstream Vera licence) and Liberation/Carlito/Caladea
+(SIL OFL-1.1, subsetted, so Modified Versions).
+
+[THIRD-PARTY.md](THIRD-PARTY.md) maps every file to its licence and states the
+split by line count; the full OFL-1.1 and Bitstream Vera texts are in
+`LICENSES/`, because those fonts ship inside `pdf-reader.wasm`.

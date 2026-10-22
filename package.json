@@ -41,7 +41,9 @@
     "build.sh",
     "scripts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "LICENSES",
+    "THIRD-PARTY.md"
   ],
   "sideEffects": [
     "*.css"

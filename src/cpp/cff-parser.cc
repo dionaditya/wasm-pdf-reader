@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache 2.0
 // Copyright 2024 - Present, Light Transport Entertainment Inc.
+// Vendored into wasm-pdf-reader (MIT); local changes are confined to namespace
+// and build/API plumbing. See THIRD-PARTY.md.
 //
 // CFF (Compact Font Format) Parser implementation
 // Reference: Adobe Technical Note #5176 "The Compact Font Format Specification"

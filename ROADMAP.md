@@ -200,6 +200,19 @@ Do not budget these to "match MuPDF"; they are a different product:
 - **OCR** (Tesseract) and document JS (`/AA`, MuJS) beyond form-field rendering.
 - **Public-key encryption** (`/Adobe.PubSec`) — vanishingly rare in the wild.
 
+## Compliance items
+
+- **Rename the embedded font subsets' internal `name` tables** (`fonts_data.h`,
+  families 3-7: Liberation/Carlito carry Reserved Font Names, and a subset is a
+  Modified Version under OFL-1.1). Matching happens on the PDF's `/BaseFont`
+  string and the faces are addressed by key (`sans_regular`, …), so the rename is
+  mechanical: rewrite the `name` table of each byte array to `Wpdf Sans` /
+  `Wpdf Serif` / `Wpdf Mono` / `Wpdf Carlito` / `Wpdf Caladea`, regenerate the
+  header, re-run the render diffs. Do not lose the copyright lines in
+  `THIRD-PARTY.md` when doing it.
+- Re-check `LICENSES/` when a vendored component is replaced; the OFL and
+  Bitstream-Vera texts are committed there because the fonts ship inside the wasm.
+
 ## Known smaller defects (fix opportunistically)
 
 - Text layer emits the raw code for a font with an embedded CMap and no
