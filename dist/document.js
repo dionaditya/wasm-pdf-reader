@@ -24,12 +24,21 @@ function serialise(task) {
 // between ~2x the file size and ~1x.
 const CHUNK_BYTES = 16 * 1024 * 1024;
 
+function outOfMemory(size) {
+  const mb = (size / (1024 * 1024)).toFixed(1);
+  const heap = (size / (1024 * 1024) + 8).toFixed(0);
+  return new Error(
+    `wasm-pdf-reader: out of memory — this PDF is ${mb} MB and the WebAssembly heap could not grow to hold it. ` +
+    `Mobile browsers cap a tab (Safari on iOS is the strictest); try a desktop browser, or pre-shrink the file.`,
+  );
+}
+
 async function copyIntoWasm(Module, source) {
   if (typeof Blob !== 'undefined' && source instanceof Blob) {
     const size = source.size;
     if (!size) throw new Error('wasm-pdf-reader: empty file');
     const ptr = Module._wpdf_alloc(size);
-    if (!ptr) throw new Error('wasm-pdf-reader: out of memory');
+    if (!ptr) throw outOfMemory(size);
     try {
       for (let off = 0; off < size; off += CHUNK_BYTES) {
         const end = Math.min(size, off + CHUNK_BYTES);
@@ -45,7 +54,7 @@ async function copyIntoWasm(Module, source) {
   const bytes = await toBytes(source);
   if (!bytes.length) throw new Error('wasm-pdf-reader: empty file');
   const ptr = Module._wpdf_alloc(bytes.length);
-  if (!ptr) throw new Error('wasm-pdf-reader: out of memory');
+  if (!ptr) throw outOfMemory(bytes.length);
   Module.HEAPU8.set(bytes, ptr);
   return { ptr, size: bytes.length };
 }
@@ -165,6 +174,9 @@ export class PdfDocument {
     const password = options.password ? String(options.password) : '';
     let pwPtr = 0;
     try {
+      if (password && typeof Module._wpdf_open_pw !== 'function') {
+        throw new Error('wasm-pdf-reader: this build cannot open password-protected PDFs (reload to update the wasm module)');
+      }
       if (password) {
         const pw = new TextEncoder().encode(password);
         pwPtr = Module._wpdf_alloc(pw.length);
