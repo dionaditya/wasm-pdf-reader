@@ -150,6 +150,14 @@ with a global symbol dictionary, drawn at 1:1:
   the handler for one mid-parse; pass `password` to `open()` (the demo prompts
   once and retries).
 
+## Roadmap
+
+[`ROADMAP.md`](ROADMAP.md) carries the ordered gap list to MuPDF-grade output —
+ICC colour management, tiling patterns, blend modes and transparency groups, mesh
+shadings, Separation/DeviceN, the JPEG 2000 decoder, Type3/Type1 fonts, OCG and
+forms — each with its fixture, acceptance numbers, touchpoints and the non-goals
+(shaping, writing, OCR, other formats) that are deliberately out of scope.
+
 ## Install
 
 ```bash
