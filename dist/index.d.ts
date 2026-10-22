@@ -103,7 +103,10 @@ export interface RenderResult {
 }
 
 export declare class PdfDocument {
-  static open(source: DocumentSource, options?: ModuleOptions & { filename?: string }): Promise<PdfDocument>;
+  static open(
+    source: DocumentSource,
+    options?: ModuleOptions & { filename?: string; password?: string },
+  ): Promise<PdfDocument>;
 
   readonly pageCount: number;
   readonly metadata: Record<string, string>;
