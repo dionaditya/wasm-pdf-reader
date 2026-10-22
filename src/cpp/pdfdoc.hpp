@@ -92,6 +92,7 @@ struct Font {
 
     int  unicodeFor(int code) const;       // 0 when unmapped
     double widthFor(int code) const;       // text space (1 em == 1000)
+    bool   widthKnown(int code) const;     // /W or /Widths actually covers it
     // Substitute face selectors derived from the BaseFont name.
     int  faceClass() const;                // 0 sans, 1 serif, 2 mono
     bool faceBold() const;

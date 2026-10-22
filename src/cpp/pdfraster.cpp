@@ -382,6 +382,7 @@ static void ApplyDash(const Polys& in, const std::vector<double>& dash, double p
 // ─── substitute fonts ───────────────────────────────────────────────────────
 struct SubFace {
     stbtt_fontinfo info;
+    const unsigned char* src = nullptr;   // cache key: the caller's buffer
     const unsigned char* data = nullptr;
     unsigned int len = 0;
     std::vector<unsigned char> owned;   // patched copy when the file needs one
@@ -472,6 +473,7 @@ static std::vector<unsigned char> addIdentityCmap(const unsigned char* d, unsign
 }
 
 static bool openFace(SubFace& f, const unsigned char* data, unsigned int len) {
+    f.src = data;
     if (stbtt_InitFont(&f.info, data, 0)) { f.data = data; f.len = len; return true; }
     std::vector<unsigned char> patched = addIdentityCmap(data, len);
     if (patched.empty()) return false;
@@ -514,10 +516,14 @@ static SubFace* faceByKey(const char* key) {
 static SubFace* faceFromData(const unsigned char* data, unsigned int len) {
     static SubFace slots[24];
     static int count = 0;
+    // Cache by the *source* pointer: a patched face rewrites data/len to its
+    // own buffer, and keying on that made every call miss, burn a slot and
+    // eventually fall back to a Latin substitute mid-paragraph.
     for (int i = 0; i < count; i++)
-        if (slots[i].data == data) return slots[i].ok ? &slots[i] : nullptr;
+        if (slots[i].src == data) return slots[i].ok ? &slots[i] : nullptr;
     if (count >= 24) return nullptr;
     SubFace& f = slots[count++];
+    f.src = data;
     f.ok = openFace(f, data, len);
     return f.ok ? &f : nullptr;
 }
@@ -793,6 +799,19 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
         if (step == 2) code = (code << 8) | (unsigned char)bytes[i + 1];
         int uni = font->unicodeFor(code);
         int gid = glyphFor(code, uni, face);
+        // CID fonts often omit /W for a subset and leave /DW at 1000, which
+        // spaces every glyph a full em apart and turns the line into a jumble.
+        // The embedded face knows the real advance, so ask it.
+        double adv1000 = font->widthFor(code);
+        if (gid && face && !font->widthKnown(code)) {
+            int adv = 0, lsb = 0;
+            stbtt_GetGlyphHMetrics(&face->info, gid, &adv, &lsb);
+            if (adv > 0) {
+                float sc = stbtt_ScaleForMappingEmToPixels(&face->info, 1.0f);
+                // scale = 1 / unitsPerEm, so em fraction = adv * scale
+                if (sc > 0) adv1000 = adv * sc * 1000.0;   // 1 em == 1000
+            }
+        }
 
         // text rendering matrix: [fs*th 0 0 fs 0 rise] x Tm x CTM
         Mat trm = Mat(fs * th, 0, 0, fs, 0, rise).mul(tmBase).mul(gs.ctm);
@@ -906,7 +925,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
 
         // ── text layer ──────────────────────────────────────────────────
         if (out && !(renderMode == 3 || renderMode == 7)) {
-            float gx0 = 0, gy0 = 0, gx1 = (float)font->widthFor(code) / 1000.f, gy1 = 0.7f;
+            float gx0 = 0, gy0 = 0, gx1 = (float)adv1000 / 1000.f, gy1 = 0.7f;
             if (haveCffBox) {
                 gx0 = cbx0; gy0 = cby0; gx1 = cbx1; gy1 = cby1;
             } else if (gid && !font->cff) {
@@ -916,7 +935,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
                     float up = stbtt_ScaleForMappingEmToPixels(&face->info, 1.0f);
                     gx0 = bx0 * up; gy0 = by0 * up;
                     gx1 = bx1 * up; gy1 = by1 * up;
-                    if (gx1 - gx0 < 0.02f) gx1 = gx0 + (float)font->widthFor(code) / 1000.f;
+                    if (gx1 - gx0 < 0.02f) gx1 = gx0 + (float)adv1000 / 1000.f;
                 }
             }
             // into device pixels first (that is where the CTM chain is known),
@@ -937,7 +956,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
             {
                 double px0, py0, px1, py1;
                 toPage.apply(0, 0, px0, py0);
-                double advUser = (font->widthFor(code) / 1000.0 * fs + tc) * th;
+                double advUser = ((font->widthKnown(code) ? font->widthFor(code) : adv1000) / 1000.0 * fs + tc) * th;
                 if (step == 1 && code == 32) advUser += tw * th;
                 // `advUser` is already in text-space points (the em advance times
                 // fs), so measure it through the text matrix without scaling by
@@ -960,7 +979,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
             out->push_back(it);
         }
         // advance in text space
-        double w0 = font->widthFor(code) / 1000.0;
+        double w0 = (font->widthKnown(code) ? font->widthFor(code) : adv1000) / 1000.0;
         double adv = (w0 * fs + tc) * th;
         if (step == 1 && code == 32) adv += tw * th;
         // Tm moves by adv in text space
@@ -1142,11 +1161,36 @@ void Interp::drawImage(ObjP io, GState& gs) {
     if (raw.size() < expected) { st->note("image data short"); return; }
 
     // /SMask: a grey soft mask where 0 = fully transparent. Without it, logos
-    // and signature stamps paint as solid black rectangles.
+    // and signature stamps paint as solid black rectangles. /Mask is the
+    // stencil variant (1 bpc, 1 = opaque) used by watermarks: drawing those
+    // without their mask paints a solid bar over the page.
     std::vector<uint8_t> mask;
     int mw = 0, mh = 0;
+    bool maskIsStencil = false;
     {
-        ObjP sm = doc->resolve(io->get("SMask"));
+        ObjP mk = doc->resolve(io->get("Mask"));
+        if (mk && mk->isStream) {
+            int mbpc = (int)num(doc->resolve(mk->get("BitsPerComponent")), 1);
+            mw = (int)num(doc->resolve(mk->get("Width")), 0);
+            mh = (int)num(doc->resolve(mk->get("Height")), 0);
+            std::string mraw;
+            if (mbpc == 1 && mw > 0 && mh > 0 && doc->decodeStream(mk, mraw)) {
+                size_t stride = ((size_t)mw + 7) / 8;
+                if (mraw.size() >= stride * (size_t)mh) {
+                    mask.resize((size_t)mw * mh);
+                    for (int y = 0; y < mh; y++) {
+                        const unsigned char* row = (const unsigned char*)mraw.data() + (size_t)y * stride;
+                        for (int x = 0; x < mw; x++)
+                            mask[(size_t)y * mw + x] =
+                                ((row[x >> 3] >> (7 - (x & 7))) & 1) ? 255 : 0;
+                    }
+                    maskIsStencil = true;
+                } else { mw = mh = 0; }
+            } else { mw = mh = 0; }
+        }
+    }
+    {
+        ObjP sm = maskIsStencil ? nullptr : doc->resolve(io->get("SMask"));
         if (sm && sm->isStream) {
             std::string mraw;
             int mbpc = (int)num(doc->resolve(sm->get("BitsPerComponent")), 8);
@@ -1171,7 +1215,12 @@ void Interp::drawImage(ObjP io, GState& gs) {
             return (unsigned char)raw[idx] / 255.f;
         }
         if (bpc == 1) {
-            size_t bit = ((size_t)(ih - 1 - y) * iw + x) * ncomp + c;
+            // 1-bpc rows are padded to a byte boundary: index with the row
+            // stride, not with the pixel width, or every row drifts by the
+            // padding bits and the image shears.
+            size_t rowBytes = ((size_t)iw + 7) / 8;
+            size_t bit = (size_t)(ih - 1 - y) * rowBytes * 8 + (size_t)x * ncomp + c;
+            if ((bit >> 3) >= raw.size()) return 1.f;
             int byte = (unsigned char)raw[bit >> 3];
             return ((byte >> (7 - (bit & 7))) & 1) ? 1.f : 0.f;
         }
@@ -1199,19 +1248,41 @@ void Interp::drawImage(ObjP io, GState& gs) {
             double v = (ex * cy - ey * cx) / det;
             if (u < 0 || u > 1 || v < 0 || v > 1) continue;
             int sx = (int)(u * iw), sy = (int)(v * ih);
+            // How much source area one device pixel covers. Scans are often
+            // thousands of pixels wide and get drawn at a fraction of that;
+            // picking a single source pixel drops thin strokes and shears
+            // rows, so average a small grid over the footprint instead.
+            double spanU = std::fabs(fy / det) * iw;
+            double spanV = std::fabs(ex / det) * ih;
+            int nx = (int)(spanU + 0.5), ny = (int)(spanV + 0.5);
+            if (nx < 1) nx = 1; if (nx > 4) nx = 4;
+            if (ny < 1) ny = 1; if (ny > 4) ny = 4;
+            auto avg = [&](int x0, int y0, int c) -> float {
+                if (nx == 1 && ny == 1) return sample(x0, y0, c);
+                float sum = 0.f;
+                int ox = (int)(spanU / nx), oy = (int)(spanV / ny);
+                if (ox < 1) ox = 1; if (oy < 1) oy = 1;
+                for (int j = 0; j < ny; j++)
+                    for (int i = 0; i < nx; i++)
+                        sum += sample(x0 + i * ox, y0 + j * oy, c);
+                return sum / (float)(nx * ny);
+            };
             float r, g, b;
-            if (ncomp == 1) { r = g = b = sample(sx, sy, 0); }
+            if (ncomp == 1) { r = g = b = avg(sx, sy, 0); }
             else if (ncomp == 4) {
-                float c = sample(sx, sy, 0), m = sample(sx, sy, 1), yy = sample(sx, sy, 2), k = sample(sx, sy, 3);
+                float c = avg(sx, sy, 0), m = avg(sx, sy, 1), yy = avg(sx, sy, 2), k = avg(sx, sy, 3);
                 r = (1 - c) * (1 - k); g = (1 - m) * (1 - k); b = (1 - yy) * (1 - k);
-            } else { r = sample(sx, sy, 0); g = sample(sx, sy, 1); b = sample(sx, sy, 2); }
+            } else { r = avg(sx, sy, 0); g = avg(sx, sy, 1); b = avg(sx, sy, 2); }
             float a = 1.f;
             if (!mask.empty() && mw > 0 && mh > 0) {
                 int mx = (int)((double)sx * mw / std::max(1, iw));
                 int my = (int)((double)sy * mh / std::max(1, ih));
                 if (mx < 0) mx = 0; if (mx >= mw) mx = mw - 1;
                 if (my < 0) my = 0; if (my >= mh) my = mh - 1;
-                a *= mask[(size_t)(mh - 1 - my) * mw + mx] * (1.f / 255.f);
+                unsigned mv = mask[(size_t)(mh - 1 - my) * mw + mx];
+                // A stencil mask paints where the bit is 0 unless /Decode flips
+                // it; our decode above kept 1 = opaque, so honour that.
+                a *= (maskIsStencil ? (mv ? 1.f : 0.f) : mv * (1.f / 255.f));
             }
             if (gs.clip) a *= (*gs.clip)[(size_t)y * cv->w + x] * (1.f / 255.f);
             if (a > 0) cv->blend(x, y, r, g, b, a);

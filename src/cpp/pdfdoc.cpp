@@ -1292,6 +1292,12 @@ int Font::unicodeFor(int code) const {
     return 0;
 }
 
+bool Font::widthKnown(int code) const {
+    if (!hasWidths) return false;
+    int i = code - firstChar;
+    return i >= 0 && i < (int)widths.size() && widths[i] > 0;
+}
+
 double Font::widthFor(int code) const {
     if (hasWidths) {
         int i = code - firstChar;
