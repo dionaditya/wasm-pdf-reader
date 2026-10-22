@@ -69,6 +69,8 @@ em++ \
   src/cpp/wpdf_api.cpp \
   src/cpp/cfffont.cpp \
   src/cpp/cff-parser.cc \
+  src/cpp/cmap.cpp \
+  src/cpp/cmaps_data.cpp \
   src/cpp/jpx-decoder.cc \
   "${FLAGS[@]}" \
   -o "$OUT_DIR/pdf-reader.mjs"

@@ -1609,6 +1609,22 @@ Font* Document::font(const ObjP& fontDict) {
     // without guessing through a cmap.
     if (f->subtype == "Type0") {
         f->isCid = true;
+        // /Encoding on the Type0 dict: /Identity-H, a predefined Adobe CMap, or
+        // an embedded CMap stream. Without this a CJK document's codes are read
+        // as CIDs and every glyph is wrong — silently, which is the worst part.
+        ObjP tenc = resolve(fd->get("Encoding"));
+        if (tenc && tenc->isStream) {
+            std::string cmText;
+            if (decodeStream(tenc, cmText)) {
+                f->cmap = cmapParse(cmText);
+                if (!f->cmap) warn("cannot parse the embedded CMap in /Encoding");
+            }
+        } else if (tenc && tenc->t == O_NAME) {
+            if (tenc->str != "Identity-H" && tenc->str != "Identity-V") {
+                f->cmap = cmapFindPtr(tenc->str);
+                if (!f->cmap) warn("unsupported CMap /Encoding /" + tenc->str);
+            }
+        }
         ObjP cm = resolve(descFont->get("CIDToGIDMap"));
         if (cm && cm->isStream) {
             std::string map;

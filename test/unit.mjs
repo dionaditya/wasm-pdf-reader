@@ -315,6 +315,47 @@ await check('annotations: marks follow the page CTM on a rotated page', async ()
 });
 annotDoc.close();
 
+// ── CMaps: predefined tables and embedded CMap streams (CJK) ───────────────
+const cjkDoc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', 'cjk-cmaps.pdf')));
+
+function inkIn(imageData, x0, y0, x1, y1) {
+  const { data, width, height } = imageData;
+  let n = 0;
+  for (let y = Math.max(0, y0); y < Math.min(height, y1); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(width, x1); x++) {
+      const i = (y * width + x) * 4;
+      if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) n++;
+    }
+  }
+  return n;
+}
+
+await check('CMaps: /UniJIS-UCS2-H resolves codes to CIDs and glyphs', async () => {
+  const text = cjkDoc.getPageText(0);
+  assert.ok(text.includes('日本語のテキスト'), `page text should decode, got ${JSON.stringify(text.slice(0, 40))}`);
+  const { imageData } = await cjkDoc.render(0, { scale: 1 });
+  const ink = inkIn(imageData, 70, 60, 300, 110);
+  assert.ok(ink > 400, `the CJK glyph run should have ink, got ${ink} px`);
+});
+
+await check('CMaps: an embedded CMap stream inherits from usecmap', async () => {
+  const { imageData } = await cjkDoc.render(1, { scale: 1 });
+  // あ (inherited U+3042) + 漢 and 語 (overridden codes) sit at 24 pt
+  const ink = inkIn(imageData, 70, 60, 200, 110);
+  assert.ok(ink > 400, `three CJK glyphs should have ink, got ${ink} px`);
+  assert.ok(!cjkDoc.warnings.some((w) => w.includes('CMap')), `unexpected warnings: ${cjkDoc.warnings}`);
+});
+
+await check('CMaps: mixed 1-byte and 2-byte codespaces decode in order', async () => {
+  const { imageData } = await cjkDoc.render(2, { scale: 1 });
+  // (A) is a one-byte code for 日, <8141> a two-byte code for は
+  const first = inkIn(imageData, 70, 60, 96, 110);
+  const second = inkIn(imageData, 96, 60, 130, 110);
+  assert.ok(first > 100, `日 should paint in the first cell, got ${first} px`);
+  assert.ok(second > 100, `は should paint in the second cell, got ${second} px`);
+});
+cjkDoc.close();
+
 // ── encryption ─────────────────────────────────────────────────────────────
 const encExpect = { 'enc-rc4.pdf': 'RC4 40/128', 'enc-aes128.pdf': 'AES-128', 'enc-aes256.pdf': 'AES-256' };
 for (const [file, label] of Object.entries(encExpect)) {

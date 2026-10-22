@@ -790,20 +790,35 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
     };
     st->texts++;
     std::vector<TextItem>* out = textSink;
-    int step = (font->subtype == "Type0") ? 2 : 1;
+    const CMap* cmap = font->cmap.get();
     // matrix from glyph units (font units, 1 em = unitsPerEm) to device:
     //   glyph -> em: scale by fs/upem  (we use stbtt scale on glyph space)
     //   then text matrix, then ctm, with Tz (horizontal) and Ts (rise)
-    for (size_t i = 0; i + step <= bytes.size(); i += step) {
-        int code = (unsigned char)bytes[i];
-        if (step == 2) code = (code << 8) | (unsigned char)bytes[i + 1];
+    for (size_t i = 0; i < bytes.size(); ) {
+        // With a predefined or embedded /Encoding CMap the code width varies
+        // (1..4 bytes), so walk the string by the codespace instead of stepping
+        // a fixed 2. Without one, a Type0 font is still two bytes per code.
+        int step = (font->subtype == "Type0") ? 2 : 1;
+        if (cmap) {
+            int n = cmap->codeLength((const unsigned char*)bytes.data() + i, bytes.size() - i);
+            if (n <= 0) { i++; continue; }     // byte outside every codespace: resync
+            step = n;
+        }
+        if (i + step > bytes.size()) break;
+        int code = 0;
+        for (int k = 0; k < step; k++) code = (code << 8) | (unsigned char)bytes[i + k];
+        int cid = code;
+        if (cmap) {
+            cid = cmap->lookup((unsigned int)code, step);
+            if (!cid) cid = 0;                 // .notdef, but keep the pen moving
+        }
         int uni = font->unicodeFor(code);
-        int gid = glyphFor(code, uni, face);
+        int gid = glyphFor(cid, uni, face);
         // CID fonts often omit /W for a subset and leave /DW at 1000, which
         // spaces every glyph a full em apart and turns the line into a jumble.
         // The embedded face knows the real advance, so ask it.
-        double adv1000 = font->widthFor(code);
-        if (gid && face && !font->widthKnown(code)) {
+        double adv1000 = font->widthFor(cid);
+        if (gid && face && !font->widthKnown(cid)) {
             int adv = 0, lsb = 0;
             stbtt_GetGlyphHMetrics(&face->info, gid, &adv, &lsb);
             if (adv > 0) {
@@ -956,7 +971,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
             {
                 double px0, py0, px1, py1;
                 toPage.apply(0, 0, px0, py0);
-                double advUser = ((font->widthKnown(code) ? font->widthFor(code) : adv1000) / 1000.0 * fs + tc) * th;
+                double advUser = ((font->widthKnown(cid) ? font->widthFor(cid) : adv1000) / 1000.0 * fs + tc) * th;
                 if (step == 1 && code == 32) advUser += tw * th;
                 // `advUser` is already in text-space points (the em advance times
                 // fs), so measure it through the text matrix without scaling by
@@ -979,7 +994,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
             out->push_back(it);
         }
         // advance in text space
-        double w0 = (font->widthKnown(code) ? font->widthFor(code) : adv1000) / 1000.0;
+        double w0 = (font->widthKnown(cid) ? font->widthFor(cid) : adv1000) / 1000.0;
         double adv = (w0 * fs + tc) * th;
         if (step == 1 && code == 32) adv += tw * th;
         // Tm moves by adv in text space
@@ -987,6 +1002,7 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
         // (Tj advances the text matrix: Td(adv,0) after each glyph)
         // We rebuild tmBase for the next glyph:
         tmBase = Mat(1, 0, 0, 1, adv, 0).mul(tmBase);
+        i += step;
     }
 }
 

@@ -7,7 +7,19 @@
 | CCITT G3/G4 fax decoder | `src/cpp/ccitt-decoder.hh` | BSD-3-Clause | The PDFium Authors / Foxit Software Inc., vendored via https://github.com/lighttransport/nanopdf |
 | JPEG 2000 decoder | `src/cpp/jpx-decoder.{cc,hh}` | Apache-2.0 | Light Transport Entertainment Inc. (nanopdf) |
 | CFF standard strings / encodings | `src/cpp/cff-parser.{cc,hh}` | Apache-2.0 | Light Transport Entertainment Inc. (nanopdf) |
+| Adobe CMap resources | `src/cpp/cmaps_data.cpp` | BSD-3-Clause | Adobe (`adobe-type-tools/cmap-resources`), packed by `scripts/build-cmaps.py` |
 | JBIG2 + fax decoders | `src/cpp/jbig2gen/` | Apache-2.0 (PDFium) / BSD-2 (wabt) / MIT (simde) | PDFium's codecs, taken from Mozilla's `pdf.js.jbig2` wasm build and translated to C with wabt's `wasm2c`; the generated `jbig2.c` is linked into `pdf-reader.wasm` |
+
+The CMap tables are a generated artifact: `scripts/build-cmaps.py` reads Adobe's
+text CMaps (`begincodespacerange` / `begincidrange` / `begincidchar`) and emits one
+zlib blob, which is compiled into `pdf-reader.wasm`. Adobe's BSD-3-Clause notice
+travels with the generated file's header and in `dist/jbig2/`-style form here:
+Copyright 1990-2023 Adobe. All rights reserved. Redistribution and use in source
+and binary forms, with or without modification, are permitted provided that the
+copyright notice, this list of conditions and the following disclaimer are
+retained; neither the name of Adobe nor the names of its contributors may be used
+to endorse or promote products derived from this software without specific prior
+written permission. The software is provided "as is", without warranty of any kind.
 
 The BSD-3-Clause licence of the fax decoder requires that its copyright notice,
 conditions and disclaimer be retained in source distributions — they are kept in

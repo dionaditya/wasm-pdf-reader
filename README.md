@@ -1,8 +1,9 @@
 # wasm-pdf-reader
 
 A PDF reader in WebAssembly: it parses, rasterizes and extracts text from a PDF
-inside the browser tab. No server, no upload, no CDN — a 1.8 MB module (0.9 MB
-gzipped) that a vanilla page or a React app can drive.
+inside the browser tab. No server, no upload, no CDN — a 2.9 MB module (1.8 MB
+gzipped, 0.9 MB of it the Adobe CMap tables) that a vanilla page or a React app
+can drive.
 
 Packaged as `@dionaditya/wasm-pdf-reader`. Try it without installing anything:
 [vanilla demo](https://dionaditya.github.io/wasm-pdf-reader/vanilla/) ·
@@ -48,9 +49,13 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 - **Fonts** — TrueType (`/FontFile2`), bare CFF and CID-keyed CFF
   (`/FontFile3 /Type1C`, `/CIDFontType0C`) through an own Type2 interpreter, and
   sfnt-wrapped `/OpenType`. CID fonts resolve glyphs through `/CIDToGIDMap` or
-  the CFF charset. Embedded subsets that ship without a `cmap` table (common for
-  Arabic and CJK) are patched with a synthetic one instead of falling back to a
-  substitute face. Advances come from `/W`, falling back to the face's `hmtx`.
+  the CFF charset, after the character code is turned into a CID by the font's
+  `/Encoding`: `/Identity-H`, one of the 179 predefined Adobe CMaps
+  (`/UniJIS-UCS2-H`, `/GBK-EUC-H`, `/90ms-RKSJ-H`, …) or an embedded CMap
+  stream, including `/usecmap` inheritance and mixed 1/2-byte codespaces.
+  Embedded subsets that ship without a `cmap` table (common for Arabic and CJK)
+  are patched with a synthetic one instead of falling back to a substitute face.
+  Advances come from `/W`, falling back to the face's `hmtx`.
 - **Annotations** — link annotations (`/URI`, `/GoTo`, direct `/Dest` and named
   destinations) are exposed as data and rendered as clickable overlays; every
   other annotation is drawn from its `/AP` appearance stream, which is where
@@ -71,7 +76,8 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 Not supported, and reported through `document.warnings` rather than silently
 approximated: text shaping for scripts that are not stored pre-shaped (Arabic,
 Indic), Type3 fonts, mesh shadings (4–7), transparency groups and blend modes,
-`/SMask` on form XObjects, non-Identity CMaps, outlines/bookmarks, form fields
+`/SMask` on form XObjects, vertical writing (`-V` CMaps paint horizontally),
+outlines/bookmarks, form fields
 and XFA, public-key encryption, and ranged/streamed loading (the whole file is
 resident in wasm memory). Annotations render but are not interactive beyond
 links: there is no panel for note text, and a highlight uses alpha rather than
@@ -252,7 +258,7 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, annotations, encryption (40 checks)
+npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (43 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:visual   # rewrite the pixel baseline after an intended change

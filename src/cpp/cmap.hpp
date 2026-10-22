@@ -3,6 +3,7 @@
 // CMap in /Encoding instead of using /Identity-H.
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,5 +34,13 @@ public:
 
 // nullptr when the name is not one of the shipped CMaps.
 const CMap* cmapFind(const std::string& name);
+
+// Same, as a shared_ptr the caller can keep on a font.
+std::shared_ptr<const CMap> cmapFindPtr(const std::string& name);
+
+// Parse a CMap *stream* (an embedded `/Encoding`): begin codespacerange /
+// begincidrange / begincidchar blocks plus `/Name usecmap` inheritance, which
+// is resolved against the shipped tables. nullptr when nothing parseable.
+std::shared_ptr<const CMap> cmapParse(const std::string& data);
 
 }  // namespace pdf
