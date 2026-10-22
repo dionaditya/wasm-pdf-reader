@@ -40,6 +40,15 @@ export interface SearchHit {
   rects: { x0: number; y0: number; x1: number; y1: number }[];
 }
 
+/** A /Link annotation: page-space box (y up) plus its target. */
+export interface LinkAnnotation {
+  x0: number; y0: number; x1: number; y1: number;
+  /** External target of a /URI (or /GoToR) action. */
+  uri?: string;
+  /** Zero-based page index of a /GoTo destination. */
+  page?: number;
+}
+
 export interface ModuleOptions {
   /** URL of pdf-reader.wasm; defaults to the file next to the JS glue. */
   wasmUrl?: string;
@@ -108,6 +117,9 @@ export declare class PdfDocument {
     index: number,
     options?: RenderOptions & { cssScale?: boolean },
   ): Promise<RenderResult>;
+
+  /** Link annotations on a page (external URIs and internal page targets). */
+  getLinks(index: number): LinkAnnotation[];
 
   getText(index: number): TextItem[];
   getPageText(index: number, options?: { lineSeparator?: string }): string;

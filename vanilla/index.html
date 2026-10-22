@@ -51,8 +51,12 @@
     padding: 6px 10px;
     width: 200px;
   }
-  main { flex: 1; min-height: 0; }
-  #viewer { height: 100%; }
+  main { flex: 1; min-height: 0; display: flex; }
+  /* #viewer must be a flex container: .wpdf-root is height:100%, which only
+     resolves against a definite height. As a plain block it collapses to its
+     content height and fit="page" renders the page at thumbnail size. */
+  #viewer { flex: 1; min-width: 0; min-height: 0; display: flex; }
+  #viewer > .wpdf-root { flex: 1; min-width: 0; }
 
   /* theme overrides for the built-in viewer */
   #viewer {

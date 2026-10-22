@@ -53,6 +53,7 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     renderError,
     renderEmpty,
     pageOverlay,
+    onLink,
     onLoad,
     onError,
     onRender,
@@ -189,6 +190,33 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
   const overlayFor = useCallback((index) => {
     const parts = [];
     const rects = [];
+    const links = doc ? doc.getLinks(index) : [];
+    if (links.length) {
+      parts.push(links.map((link, i) => {
+        const css = doc.boxToCss(link, index, effectiveScale);
+        const external = !!link.uri;
+        return /* @__PURE__ */ jsx(
+          "a",
+          {
+            className: "wpdf-link",
+            href: external ? link.uri : `#page-${link.page + 1}`,
+            target: external ? "_blank" : void 0,
+            rel: external ? "noopener noreferrer" : void 0,
+            title: external ? link.uri : `Go to page ${link.page + 1}`,
+            style: { left: css.left, top: css.top, width: css.width, height: css.height },
+            onClick: (ev) => {
+              const handled = onLink?.(link, { document: doc, goToPage, pageCount });
+              if (handled === false) return;
+              if (!external && link.page >= 0) {
+                ev.preventDefault();
+                goToPage(link.page);
+              }
+            }
+          },
+          `ln-${i}`
+        );
+      }));
+    }
     if (searchHits.length) {
       for (const hit of searchHits) if (hit.page === index) rects.push(...hit.rects);
     }
@@ -214,7 +242,7 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     }
     if (pageOverlay) parts.push(pageOverlay(index, { document: doc, scale: effectiveScale, pageCount }));
     return parts;
-  }, [searchHits, highlights, pageOverlay, doc, effectiveScale, pageCount]);
+  }, [searchHits, highlights, pageOverlay, onLink, doc, effectiveScale, goToPage, pageCount]);
   const pageSize = doc && pageCount ? doc.getPageSize(Math.min(page, pageCount - 1)) : null;
   const titleText = title || metadata?.Title || (typeof file === "object" && file ? file.name : "") || "";
   const toolbarProps = {
