@@ -9,4 +9,4 @@ export { loadModule, resetModule } from './loader.js';
 export { mountPdfReader, defaultLabels, applyTheme } from './mount.js';
 export { groupLines, itemsToText, searchItems, boxToCss } from './text.js';
 
-export const version = '0.1.0';
+export const version = '0.2.0';

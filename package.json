@@ -1,6 +1,6 @@
 {
   "name": "@dionaditya/wasm-pdf-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A PDF parser, rasterizer and text extractor in WebAssembly — plain-JS viewer plus React components, no server and no CDN.",
   "keywords": [
     "pdf",
