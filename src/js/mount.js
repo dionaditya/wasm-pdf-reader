@@ -300,6 +300,7 @@ export function mountPdfReader(target, options = {}) {
       }
       const linkEl = linkLayer(pageEl, state.page);
       if (linkEl) pageEl.appendChild(linkEl);
+      selectionLayer(pageEl);
       const hl = opts.highlights?.(state.page, scale) || [];
       if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));
     } catch (err) {
@@ -367,6 +368,7 @@ export function mountPdfReader(target, options = {}) {
         }));
       }
       linkLayer(pageEl, index);
+      selectionLayer(pageEl);
       const hl = opts.highlights?.(index, scale) || [];
       if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));
       if (index === state.page) updateStatus();
@@ -375,6 +377,106 @@ export function mountPdfReader(target, options = {}) {
       if (token === renderToken) showError(err);
     }
   }
+
+  // ── selection highlight ──────────────────────────────────────────────────
+  // The browser paints one box per text span, so a selection over per-glyph runs
+  // shows ragged, overlapping rectangles. The native highlight is made
+  // transparent in CSS and we paint a single rect per line instead, which is
+  // what a document viewer looks like.
+  const selLayers = new Map();
+
+  function selectionLayer(pageEl) {
+    let layer = selLayers.get(pageEl);
+    if (!layer) {
+      layer = el('div', 'wpdf-selection');
+      pageEl.appendChild(layer);
+      selLayers.set(pageEl, layer);
+    }
+    return layer;
+  }
+
+  function selectionLines(range, pageRect) {
+    const groups = [];
+    for (const r of range.getClientRects()) {
+      if (!r.width || !r.height) continue;
+      if (r.bottom < pageRect.top || r.top > pageRect.bottom) continue;
+      const top = r.top - pageRect.top;
+      const bottom = r.bottom - pageRect.top;
+      const center = (top + bottom) / 2;
+      // Cluster by vertical centre, not by top: runs on one line have different
+      // box heights (caps vs descenders), and grouping on top leaves ragged
+      // per-glyph strips.
+      const g = groups.find((x) => Math.abs(x.center - center) <= Math.max(3, (x.bottom - x.top) * 0.5));
+      if (g) {
+        g.left = Math.min(g.left, r.left - pageRect.left);
+        g.right = Math.max(g.right, r.right - pageRect.left);
+        g.top = Math.min(g.top, top);
+        g.bottom = Math.max(g.bottom, bottom);
+        g.center = (g.top + g.bottom) / 2;
+      } else {
+        groups.push({
+          left: r.left - pageRect.left,
+          right: r.right - pageRect.left,
+          top,
+          bottom,
+          center,
+        });
+      }
+    }
+    // Second pass: stitch strips that touch into one bar, so a line selected
+    // across runs of different sizes is a single rectangle.
+    groups.sort((a, b) => a.top - b.top);
+    const merged = [];
+    for (const g of groups) {
+      const host = merged.find(
+        (m) =>
+          g.left < m.right + 2 &&
+          g.right > m.left - 2 &&
+          g.top < m.bottom &&
+          g.bottom > m.top,
+      );
+      if (host) {
+        host.left = Math.min(host.left, g.left);
+        host.right = Math.max(host.right, g.right);
+        host.top = Math.min(host.top, g.top);
+        host.bottom = Math.max(host.bottom, g.bottom);
+      } else {
+        merged.push({ ...g });
+      }
+    }
+    return merged;
+  }
+
+  function paintSelection() {
+    const sel = window.getSelection();
+    const live = [...selLayers.entries()];
+    for (const [, layer] of live) layer.replaceChildren();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) return;
+    for (const [pageEl, layer] of live) {
+      for (const g of selectionLines(range, pageEl.getBoundingClientRect())) {
+        const bar = document.createElement('i');
+        bar.style.left = `${g.left}px`;
+        bar.style.top = `${g.top - 1}px`;
+        bar.style.width = `${Math.max(1, g.right - g.left)}px`;
+        bar.style.height = `${g.bottom - g.top + 2}px`;
+        layer.appendChild(bar);
+      }
+    }
+  }
+
+  let selFrame = 0;
+  function queueSelectionPaint() {
+    if (selFrame) return;
+    selFrame = requestAnimationFrame(() => {
+      selFrame = 0;
+      paintSelection();
+    });
+  }
+  document.addEventListener('selectionchange', queueSelectionPaint);
+  viewport.addEventListener('scroll', queueSelectionPaint, { passive: true });
+  window.addEventListener('resize', queueSelectionPaint);
 
   // Link annotations: every /Link with a URI or an internal /GoTo becomes a
   // transparent anchor over the page bitmap.

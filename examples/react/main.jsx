@@ -18,7 +18,7 @@ const theme = {
   pageShadow: '0 12px 32px rgba(0,0,0,.55)',
 };
 
-function CustomToolbar({ page, pageCount, scale, onPageChange, onZoom, onFit, onExtract }) {
+function CustomToolbar({ page, pageCount, scale, scroll, onPageChange, onZoom, onFit, onExtract, onToggleScroll }) {
   return (
     <div className="wpdf-toolbar" role="toolbar">
       <strong style={{ fontWeight: 600, marginRight: 8 }}>Report</strong>
@@ -28,6 +28,14 @@ function CustomToolbar({ page, pageCount, scale, onPageChange, onZoom, onFit, on
         <button className="wpdf-button" onClick={() => onPageChange(page + 1)} disabled={page >= pageCount - 1} aria-label="Next page">›</button>
       </div>
       <span className="wpdf-toolbar__spacer" />
+      <button
+        className="wpdf-button"
+        aria-pressed={scroll}
+        onClick={onToggleScroll}
+        title="Stack every page and scroll, instead of one page at a time"
+      >
+        {scroll ? 'single page' : 'scroll mode'}
+      </button>
       <button className="wpdf-button" onClick={onExtract}>Extract text</button>
       <div className="wpdf-toolbar__group">
         <button className="wpdf-button" onClick={() => onZoom(scale / 1.25)} aria-label="Zoom out">−</button>
@@ -45,6 +53,7 @@ function App() {
   const [page, setPage] = useState(0);
   const [text, setText] = useState('');
   const [meta, setMeta] = useState({});
+  const [scroll, setScroll] = useState(false);
 
   const extract = useCallback(() => {
     const body = reader.current?.pageText(page) ?? '';
@@ -61,6 +70,7 @@ function App() {
           page={page}
           onPageChange={setPage}
           fit="width"
+          continuous={scroll}
           theme={theme}
           toolbar={(api) => (
             <CustomToolbar
@@ -71,6 +81,8 @@ function App() {
               onZoom={api.onZoom}
               onFit={api.onFit}
               onExtract={extract}
+              scroll={scroll}
+              onToggleScroll={() => setScroll((v) => !v)}
             />
           )}
           pageOverlay={(index) => (

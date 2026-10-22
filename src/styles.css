@@ -146,8 +146,24 @@
 }
 .wpdf-textlayer ::selection,
 .wpdf-textlayer ::-moz-selection {
-  background: var(--wpdf-accent, rgba(30, 120, 255, 0.35));
+  /* painted by .wpdf-selection instead: one rect per line, not per glyph run */
+  background: transparent;
   color: transparent;
+}
+
+/* Selection highlight drawn by the viewer: uniform per line, over the canvas
+   and under the link layer. */
+.wpdf-selection {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+.wpdf-selection i {
+  position: absolute;
+  background: rgba(64, 132, 244, 0.32);
+  border-radius: 2px;
 }
 .wpdf-page__overlay {
   position: absolute;
