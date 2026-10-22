@@ -358,6 +358,15 @@ export function mountPdfReader(target, options = {}) {
       });
       if (token !== renderToken || destroyed) return;
       emit('onRender', { page: index, scale, ...out });
+      // Continuous pages are built lazily as they scroll into view, so the
+      // text and link layers have to be attached here, not once up front.
+      if (opts.textLayer !== false) {
+        const size = state.doc.getPageSize(index);
+        pageEl.appendChild(buildTextLayer(state.doc.getText(index), {
+          scale, height: size.height, boxY0: size.boxY0,
+        }));
+      }
+      linkLayer(pageEl, index);
       const hl = opts.highlights?.(index, scale) || [];
       if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));
       if (index === state.page) updateStatus();
