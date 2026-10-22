@@ -120,6 +120,33 @@
   flex: 0 0 auto;
 }
 .wpdf-page__canvas { display: block; border-radius: 2px; }
+
+/* Transparent text layer: the canvas paints, these spans carry the characters
+   so selection, copy and the browser's find-in-page work. */
+.wpdf-page__text { position: absolute; inset: 0; }
+
+.wpdf-textlayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.wpdf-textlayer span {
+  position: absolute;
+  white-space: pre;
+  color: transparent;
+  transform-origin: 0 0;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.wpdf-textlayer ::selection,
+.wpdf-textlayer ::-moz-selection {
+  background: var(--wpdf-accent, rgba(30, 120, 255, 0.35));
+  color: transparent;
+}
 .wpdf-page__overlay {
   position: absolute;
   inset: 0;

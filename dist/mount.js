@@ -6,6 +6,7 @@
 // the same PdfDocument class.
 
 import { PdfDocument } from './document.js';
+import { buildTextLayer } from './text.js';
 
 const ICONS = {
   prev: '‹',
@@ -290,6 +291,13 @@ export function mountPdfReader(target, options = {}) {
       if (token !== renderToken || destroyed) return;
       state.renderMs = Math.round(performance.now() - started);
       emit('onRender', { page: state.page, scale, ...out });
+      if (opts.textLayer !== false) {
+        const size = state.doc.getPageSize(state.page);
+        const textEl = buildTextLayer(state.doc.getText(state.page), {
+          scale, height: size.height, boxY0: size.boxY0,
+        });
+        pageEl.appendChild(textEl);
+      }
       const linkEl = linkLayer(pageEl, state.page);
       if (linkEl) pageEl.appendChild(linkEl);
       const hl = opts.highlights?.(state.page, scale) || [];
