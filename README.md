@@ -129,6 +129,14 @@ with a global symbol dictionary, drawn at 1:1:
   For text documents that is roughly the file size; scans add the decoded image.
   Measured: a 78 MB / 16-page PDF of full-page JPEGs opens and renders its first
   page in ~0.8 s on desktop.
+- **The wasm heap only grows.** Emscripten cannot return memory to the OS, so the
+  figure you see is a high-water mark for the module's lifetime; tearing the
+  module down (`resetModule()`) frees it. `npm run test:memory` asserts it
+  plateaus rather than climbing per render or per open/close. Measured on a
+  JBIG2 sheet at 2x: 112 MB, no drift over rounds. The first JBIG2 image
+  pre-grows the heap by 64 MB (the decoder's allocator is safest when it has
+  headroom before a decode), and pages are decoded into one reusable RGBA
+  buffer, so peak per render is about two page bitmaps, not one per page.
 - **The heap is capped at 1 GiB** (`-sMAXIMUM_MEMORY=1073741824`). A 4 GiB
   ceiling looked harmless and broke phones: iOS refuses to grow a module that
   has asked to reserve that much address space, so allocation failed early with
@@ -317,6 +325,7 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (43 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
+npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus
 npm run test:visual   # rewrite the pixel baseline after an intended change
 ```
 

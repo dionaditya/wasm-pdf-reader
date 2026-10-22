@@ -57,10 +57,13 @@ void ensureReady() {
 		if (getenv("JBIG2_DEBUG")) fprintf(stderr, "[jbig2] instantiate\n");
 		wasm2c_jbig2_instantiate(&gInst, &gImports);
 		w2c_jbig2_j(&gInst);   // __wasm_call_ctors: run the module's static initialisers
-		// Pre-grow: growing mid-decode works, but the module's own bounds checks
-		// are cheap to satisfy up front and the peak for a page is a few tens
-		// of MB.
-		w2c_a_b(&gImports, 256u << 20);
+		// Pre-grow so the decoder's bounds checks are satisfied up front: it
+		// grows on its own when malloc runs dry, but only after a failed
+		// allocation inside a decode. A broad sheet needs a few tens of MB, so
+		// 64 is a generous margin — and this is the *whole module's* heap, which
+		// never shrinks: 256 here pinned every document that touched a JBIG2
+		// image at ~343 MB for its lifetime.
+		w2c_a_b(&gImports, 64u << 20);
 		if (getenv("JBIG2_DEBUG")) fprintf(stderr, "[jbig2] memory %llu bytes\n", (unsigned long long)memory()->size);
 		gReady = true;
 	}
