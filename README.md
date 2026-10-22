@@ -71,6 +71,22 @@ Indic), Type3 fonts, mesh shadings (4–7), transparency groups and blend modes,
 and XFA, public-key encryption, and ranged/streamed loading (the whole file is
 resident in wasm memory).
 
+## Security notes
+
+- **No `eval`, by construction.** Parsing and rasterizing are C++; no JavaScript
+  is generated from document data, and the build sets `-s DYNAMIC_EXECUTION=0`
+  so Emscripten cannot emit `eval`/`new Function` either. `dist/` contains
+  neither, and neither appears as a string in `pdf-reader.wasm`.
+- **CVE-2024-4367 (pdf.js `/FontMatrix` injection) does not apply.** That bug
+  exists because pdf.js compiled glyph commands into JS source; we interpret
+  Type 1/Type 2 charstrings in C++ and read `/FontMatrix` entries as doubles.
+  Checked against the Codean Labs PoC: the file opens, renders, raises no
+  warnings, and executes nothing.
+- **Bounds instead of trust.** Page bitmaps are capped at 40 MP, images at
+  20000 px per side, form nesting at depth 6, and every number read from the
+  file goes through one `objNum` coercion. The failure mode for hostile input
+  is a refused page, not code execution.
+
 ## Limits
 
 - **The whole file is resident.** No ranged loading: the PDF sits in the wasm

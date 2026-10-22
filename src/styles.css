@@ -130,6 +130,8 @@
   inset: 0;
   overflow: hidden;
   line-height: 1;
+  white-space: pre;            /* keep the separator text nodes from collapsing */
+  color: transparent;          /* separators are plain text nodes */
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
