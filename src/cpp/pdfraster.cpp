@@ -1621,6 +1621,252 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
     (void)lastPathName;
 }
 
+// ─── annotation fallbacks ───────────────────────────────────────────────────
+// Not every producer writes an appearance stream where one is allowed:
+// highlight/underline/strikeout/squiggly marks usually arrive as /QuadPoints
+// plus /C only, and a /Text note may have no icon appearance at all. Both are
+// synthesised here, straight into the device canvas, after the page content.
+
+struct AnnotQuad { double x[4], y[4]; };
+
+static bool annotQuads(Document* doc, const ObjP& an, std::vector<AnnotQuad>& out) {
+    ObjP q = doc->resolve(an->get("QuadPoints"));
+    if (q && q->t == O_ARR && q->arr.size() >= 8) {
+        for (size_t i = 0; i + 7 < q->arr.size(); i += 8) {
+            AnnotQuad a;
+            for (int k = 0; k < 4; k++) {
+                a.x[k] = num(doc->resolve(q->arr[i + k * 2]), 0);
+                a.y[k] = num(doc->resolve(q->arr[i + k * 2 + 1]), 0);
+            }
+            double x0 = a.x[0], x1 = a.x[0], y0 = a.y[0], y1 = a.y[0];
+            for (int k = 1; k < 4; k++) {
+                x0 = std::min(x0, a.x[k]); x1 = std::max(x1, a.x[k]);
+                y0 = std::min(y0, a.y[k]); y1 = std::max(y1, a.y[k]);
+            }
+            if (x1 - x0 > 0.2 && y1 - y0 > 0.2) out.push_back(a);
+        }
+    }
+    if (out.empty()) {   // no /QuadPoints: the /Rect is the whole mark
+        ObjP r = doc->resolve(an->get("Rect"));
+        if (r && r->t == O_ARR && r->arr.size() >= 4) {
+            double v[4];
+            for (int i = 0; i < 4; i++) v[i] = num(doc->resolve(r->arr[i]), 0);
+            double x0 = std::min(v[0], v[2]), x1 = std::max(v[0], v[2]);
+            double y0 = std::min(v[1], v[3]), y1 = std::max(v[1], v[3]);
+            if (x1 - x0 > 0.2 && y1 - y0 > 0.2) {
+                AnnotQuad a;
+                a.x[0] = x0; a.y[0] = y1; a.x[1] = x1; a.y[1] = y1;
+                a.x[2] = x0; a.y[2] = y0; a.x[3] = x1; a.y[3] = y0;
+                out.push_back(a);
+            }
+        }
+    }
+    return !out.empty();
+}
+
+// /C is grey (1 component), RGB (3) or CMYK (4), each 0..1. Producers write the
+// corners of a quad in either orientation, so sort them around the centroid
+// instead of trusting the spec order.
+static void quadPoly(const AnnotQuad& a, Poly& out) {
+    double cx = 0, cy = 0;
+    for (int k = 0; k < 4; k++) { cx += a.x[k]; cy += a.y[k]; }
+    cx /= 4; cy /= 4;
+    int idx[4] = {0, 1, 2, 3};
+    std::sort(idx, idx + 4, [&](int p, int q) {
+        return std::atan2(a.y[p] - cy, a.x[p] - cx) < std::atan2(a.y[q] - cy, a.x[q] - cx);
+    });
+    out.clear();
+    for (int k = 0; k < 4; k++) out.push_back({(float)a.x[idx[k]], (float)a.y[idx[k]]});
+}
+
+// The bottom edge of a quad, its inward normal and the text height it covers.
+static void quadFrame(const Poly& q, Pt& p0, Pt& p1, Pt& n, double& h) {
+    double cx = 0, cy = 0, miny = 1e30, maxy = -1e30;
+    for (const Pt& p : q) {
+        cx += p.x; cy += p.y;
+        miny = std::min(miny, (double)p.y); maxy = std::max(maxy, (double)p.y);
+    }
+    cx /= 4; cy /= 4;
+    h = maxy - miny > 0.2 ? maxy - miny : 1.0;
+    double best = 1e30;
+    p0 = q[0]; p1 = q[1];
+    for (size_t i = 0; i < q.size(); i++) {
+        const Pt& a = q[i];
+        const Pt& b = q[(i + 1) % q.size()];
+        double mid = (a.y + b.y) * 0.5;
+        if (mid < best) { best = mid; p0 = a; p1 = b; }
+    }
+    double dx = p1.x - p0.x, dy = p1.y - p0.y;
+    double len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1e-6) { n = {0, 1}; return; }
+    n = {(float)(-dy / len), (float)(dx / len)};
+    // point it into the quad
+    double mx = (p0.x + p1.x) * 0.5, my = (p0.y + p1.y) * 0.5;
+    if (n.x * (cx - mx) + n.y * (cy - my) < 0) { n.x = -n.x; n.y = -n.y; }
+}
+
+static void addBar(Poly& out, const Pt& p0, const Pt& p1, const Pt& n,
+                   double up, double thick) {
+    out.clear();
+    out.push_back({(float)(p0.x + n.x * up), (float)(p0.y + n.y * up)});
+    out.push_back({(float)(p1.x + n.x * up), (float)(p1.y + n.y * up)});
+    out.push_back({(float)(p1.x + n.x * (up + thick)), (float)(p1.y + n.y * (up + thick))});
+    out.push_back({(float)(p0.x + n.x * (up + thick)), (float)(p0.y + n.y * (up + thick))});
+}
+
+static void annotColor(Document* doc, const ObjP& an, bool markup, float* rgb) {
+    rgb[0] = markup ? 1.f : 0.98f;
+    rgb[1] = markup ? 0.90f : 0.86f;
+    rgb[2] = markup ? 0.f : 0.32f;
+    ObjP c = doc->resolve(an->get("C"));
+    if (!c || c->t != O_ARR || c->arr.empty()) return;
+    std::vector<double> v;
+    for (auto& e : c->arr) v.push_back(num(doc->resolve(e), 0));
+    if (v.size() == 1) { rgb[0] = rgb[1] = rgb[2] = (float)v[0]; }
+    else if (v.size() == 3) { for (int i = 0; i < 3; i++) rgb[i] = (float)v[i]; }
+    else if (v.size() >= 4) cmykToRgb(v[0], v[1], v[2], v[3], rgb);
+}
+
+static void annotFill(Canvas& cv, const Mat& ctm, const Polys& pagePolys,
+                      const float* rgb, float alpha) {
+    Polys dev;
+    for (const Poly& p : pagePolys) {
+        if (p.size() < 3) continue;
+        Poly d;
+        for (const Pt& pt : p) {
+            double x, y;
+            ctm.apply(pt.x, pt.y, x, y);
+            d.push_back({(float)x, (float)y});
+        }
+        dev.push_back(std::move(d));
+    }
+    if (!dev.empty()) FillPolys(cv, dev, false, rgb[0], rgb[1], rgb[2], alpha, nullptr);
+}
+
+// A paper icon with a folded corner and three ruled lines, sized from /Rect.
+static void paintNoteIcon(Document* doc, Canvas& cv, const Mat& ctm, const ObjP& an) {
+    ObjP r = doc->resolve(an->get("Rect"));
+    if (!r || r->t != O_ARR || r->arr.size() < 4) return;
+    double v[4];
+    for (int i = 0; i < 4; i++) v[i] = num(doc->resolve(r->arr[i]), 0);
+    double x0 = std::min(v[0], v[2]), x1 = std::max(v[0], v[2]);
+    double y0 = std::min(v[1], v[3]), y1 = std::max(v[1], v[3]);
+    double w = x1 - x0, h = y1 - y0;
+    if (w < 2 || h < 2) return;
+    if (w > 4 * h) w = h;            // a /Rect spanning the page is not an icon
+    if (h > 4 * w) h = w;
+
+    float base[3];
+    annotColor(doc, an, false, base);
+    float body[3] = {base[0] * 0.25f + 0.75f, base[1] * 0.25f + 0.75f, base[2] * 0.25f + 0.75f};
+    float ink[3] = {0.25f, 0.22f, 0.12f};
+
+    double f = std::min(w, h) * 0.34;     // folded corner
+    double bw = std::max(0.6, std::min(w, h) * 0.06);   // border width
+
+    Polys page;
+    Poly outer = {{(float)x0, (float)y0}, {(float)x1, (float)y0},
+                  {(float)x1, (float)(y1 - f)}, {(float)(x1 - f), (float)y1},
+                  {(float)x0, (float)y1}};
+    page.push_back(outer);
+    annotFill(cv, ctm, page, ink, 1.f);
+
+    page.clear();
+    Poly inner = {{(float)(x0 + bw), (float)(y0 + bw)}, {(float)(x1 - bw), (float)(y0 + bw)},
+                  {(float)(x1 - bw), (float)(y1 - f + bw * 0.5)},
+                  {(float)(x1 - f + bw * 0.5), (float)(y1 - bw)},
+                  {(float)(x0 + bw), (float)(y1 - bw)}};
+    page.push_back(inner);
+    annotFill(cv, ctm, page, body, 1.f);
+
+    // fold: a darker triangle in the cut corner
+    page.clear();
+    page.push_back({{(float)(x1 - f), (float)(y1 - bw)},
+                    {(float)(x1 - bw), (float)(y1 - f)},
+                    {(float)(x1 - f), (float)(y1 - f + bw * 0.5)}});
+    annotFill(cv, ctm, page, ink, 1.f);
+
+    // ruled lines
+    double lx0 = x0 + w * 0.22, lx1 = x1 - w * 0.22;
+    double lh = std::max(0.5, h * 0.07);
+    for (int i = 0; i < 3; i++) {
+        double ly = y0 + h * (0.26 + i * 0.18);
+        page.clear();
+        page.push_back({{(float)lx0, (float)ly}, {(float)lx1, (float)ly},
+                        {(float)lx1, (float)(ly + lh)}, {(float)lx0, (float)(ly + lh)}});
+        annotFill(cv, ctm, page, ink, 0.8f);
+    }
+}
+
+// Returns true when something was painted for an annotation that has no
+// usable appearance stream.
+static bool paintAnnotFallback(Document* doc, Canvas& cv, const Mat& ctm,
+                               const std::string& sub, const ObjP& an) {
+    if (sub == "Text" || sub == "Comment" || sub == "Note") {
+        paintNoteIcon(doc, cv, ctm, an);
+        return true;
+    }
+    if (sub != "Highlight" && sub != "Underline" && sub != "StrikeOut" &&
+        sub != "Squiggly")
+        return false;
+
+    std::vector<AnnotQuad> quads;
+    if (!annotQuads(doc, an, quads)) return false;
+
+    float rgb[3];
+    annotColor(doc, an, true, rgb);
+    double ca = num(doc->resolve(an->get("CA")), -1);
+    float alpha = ca >= 0 ? (float)std::min(1.0, std::max(0.0, ca))
+                          : (sub == "Highlight" ? 0.45f : 1.f);
+
+    Polys page;
+    for (const AnnotQuad& a : quads) {
+        Poly q, bar;
+        quadPoly(a, q);
+        if (sub == "Highlight") {
+            page.push_back(q);
+            continue;
+        }
+        Pt p0, p1, n;
+        double h = 0;
+        quadFrame(q, p0, p1, n, h);
+        if (sub == "Underline") {
+            double th = std::max(0.6, h * 0.07);
+            addBar(bar, p0, p1, n, h * 0.03, th);
+            page.push_back(bar);
+        } else if (sub == "StrikeOut") {
+            double th = std::max(0.6, h * 0.07);
+            addBar(bar, p0, p1, n, h * 0.45, th);
+            page.push_back(bar);
+        } else {   // Squiggly
+            double amp = std::max(0.6, h * 0.07), th = std::max(0.5, h * 0.05);
+            double len = std::hypot(p1.x - p0.x, p1.y - p0.y);
+            int segs = (int)std::max(4.0, std::min(160.0, len / std::max(0.8, h * 0.28)));
+            Pt prev = {p0.x, p0.y};
+            for (int i = 1; i <= segs; i++) {
+                double t = (double)i / segs;
+                double up = h * 0.30 + ((i & 1) ? amp : -amp);
+                Pt cur = {(float)(p0.x + (p1.x - p0.x) * t + n.x * up),
+                          (float)(p0.y + (p1.y - p0.y) * t + n.y * up)};
+                // thin quad around the segment
+                double dx = cur.x - prev.x, dy = cur.y - prev.y;
+                double l = std::hypot(dx, dy);
+                if (l > 1e-6) {
+                    float nx = (float)(-dy / l * th * 0.5), ny = (float)(dx / l * th * 0.5);
+                    Poly segp = {{(float)(prev.x + nx), (float)(prev.y + ny)},
+                                 {(float)(cur.x + nx), (float)(cur.y + ny)},
+                                 {(float)(cur.x - nx), (float)(cur.y - ny)},
+                                 {(float)(prev.x - nx), (float)(prev.y - ny)}};
+                    page.push_back(segp);
+                }
+                prev = cur;
+            }
+        }
+    }
+    annotFill(cv, ctm, page, rgb, alpha);
+    return true;
+}
+
 } // namespace
 
 // ─── public entry point ─────────────────────────────────────────────────────
@@ -1728,63 +1974,74 @@ bool Renderer::renderPage(int pageIndex, double scale, Image& out, RenderStats* 
 
     // Annotation appearance streams. Signatures, stamps (materai) and form
     // widgets live only in /AP /N: the page content stream never draws them.
+    // Markup annotations and text notes are allowed to omit the appearance;
+    // paintAnnotFallback synthesises those from /QuadPoints, /C and /Rect.
     ObjP annots = doc->resolve(page->get("Annots"));
     if (annots && annots->t == O_ARR) {
+        std::string adata;
         for (auto& entry : annots->arr) {
             ObjP an = doc->resolve(entry);
             if (!an || an->t != O_DICT) continue;
             int flags = (int)num(doc->resolve(an->get("F")), 0);
             if (flags & 0x02) continue;    // Hidden
             if (flags & 0x20) continue;    // NoView
+            std::string sub = objName(doc->resolve(an->get("Subtype")));
+            bool painted = false;
+
             ObjP ap = doc->resolve(an->get("AP"));
-            if (!ap || ap->t != O_DICT) continue;
-            ObjP form = doc->resolve(ap->get("N"));
+            ObjP form = (ap && ap->t == O_DICT) ? doc->resolve(ap->get("N")) : nullptr;
             if (form && form->t == O_DICT && !form->isStream) {   // keyed by /AS
                 ObjP as = doc->resolve(an->get("AS"));
                 form = (as && as->t == O_NAME) ? doc->resolve(form->get(as->str.c_str())) : nullptr;
             }
-            if (!form || !form->isStream) continue;
             ObjP rect = doc->resolve(an->get("Rect"));
-            if (!rect || rect->t != O_ARR || rect->arr.size() < 4) continue;
             double r[4];
-            for (int i = 0; i < 4; i++) r[i] = num(doc->resolve(rect->arr[i]), 0);
-            double rx0 = std::min(r[0], r[2]), rx1 = std::max(r[0], r[2]);
-            double ry0 = std::min(r[1], r[3]), ry1 = std::max(r[1], r[3]);
-            if (rx1 - rx0 < 0.5 || ry1 - ry0 < 0.5) continue;
+            bool rectOk = rect && rect->t == O_ARR && rect->arr.size() >= 4;
+            if (rectOk)
+                for (int i = 0; i < 4; i++) r[i] = num(doc->resolve(rect->arr[i]), 0);
 
-            double bx0 = 0, by0 = 0, bx1 = 1, by1 = 1;
-            ObjP bbox = doc->resolve(form->get("BBox"));
-            if (bbox && bbox->t == O_ARR && bbox->arr.size() == 4) {
-                // Corners may be written in any order (many producers emit
-                // [0 h w 0]); normalise or the height comes out negative and
-                // the appearance is dropped.
-                double v[4];
-                for (int i = 0; i < 4; i++) v[i] = num(doc->resolve(bbox->arr[i]), i < 2 ? 0 : 1);
-                bx0 = std::min(v[0], v[2]); bx1 = std::max(v[0], v[2]);
-                by0 = std::min(v[1], v[3]); by1 = std::max(v[1], v[3]);
+            if (form && form->isStream && rectOk) {
+                double rx0 = std::min(r[0], r[2]), rx1 = std::max(r[0], r[2]);
+                double ry0 = std::min(r[1], r[3]), ry1 = std::max(r[1], r[3]);
+                if (rx1 - rx0 >= 0.5 && ry1 - ry0 >= 0.5) {
+                    double bx0 = 0, by0 = 0, bx1 = 1, by1 = 1;
+                    ObjP bbox = doc->resolve(form->get("BBox"));
+                    if (bbox && bbox->t == O_ARR && bbox->arr.size() == 4) {
+                        // Corners may be written in any order (many producers
+                        // emit [0 h w 0]); normalise or the height comes out
+                        // negative and the appearance is dropped.
+                        double v[4];
+                        for (int i = 0; i < 4; i++) v[i] = num(doc->resolve(bbox->arr[i]), i < 2 ? 0 : 1);
+                        bx0 = std::min(v[0], v[2]); bx1 = std::max(v[0], v[2]);
+                        by0 = std::min(v[1], v[3]); by1 = std::max(v[1], v[3]);
+                    }
+                    double bw = bx1 - bx0, bh = by1 - by0;
+                    if (bw > 0 && bh > 0 && doc->decodeStream(form, adata) && !adata.empty()) {
+                        double sx = (rx1 - rx0) / bw, sy = (ry1 - ry0) / bh;
+                        Mat place(sx, 0, 0, sy, rx0 - bx0 * sx, ry0 - by0 * sy);
+                        ObjP fm = doc->resolve(form->get("Matrix"));
+                        if (fm && fm->t == O_ARR && fm->arr.size() == 6) {
+                            Mat fmat(num(doc->resolve(fm->arr[0]), 1), num(doc->resolve(fm->arr[1]), 0),
+                                     num(doc->resolve(fm->arr[2]), 0), num(doc->resolve(fm->arr[3]), 1),
+                                     num(doc->resolve(fm->arr[4]), 0), num(doc->resolve(fm->arr[5]), 0));
+                            place = fmat.mul(place);
+                        }
+                        GState ags = gs;
+                        ags.ctm = place.mul(ctm);
+                        Interp ai;
+                        ai.doc = doc;
+                        ai.cv = &cv;
+                        ai.st = st;
+                        ai.textSink = nullptr;
+                        ai.devToPage = ags.ctm.inverse();
+                        ai.exec(adata, doc->resolve(form->get("Resources")), ags);
+                        painted = true;
+                    }
+                }
             }
-            double bw = bx1 - bx0, bh = by1 - by0;
-            if (bw <= 0 || bh <= 0) continue;
-            double sx = (rx1 - rx0) / bw, sy = (ry1 - ry0) / bh;
-            Mat place(sx, 0, 0, sy, rx0 - bx0 * sx, ry0 - by0 * sy);
-            ObjP fm = doc->resolve(form->get("Matrix"));
-            if (fm && fm->t == O_ARR && fm->arr.size() == 6) {
-                Mat fmat(num(doc->resolve(fm->arr[0]), 1), num(doc->resolve(fm->arr[1]), 0),
-                         num(doc->resolve(fm->arr[2]), 0), num(doc->resolve(fm->arr[3]), 1),
-                         num(doc->resolve(fm->arr[4]), 0), num(doc->resolve(fm->arr[5]), 0));
-                place = fmat.mul(place);
-            }
-            std::string adata;
-            if (!doc->decodeStream(form, adata)) continue;
-            GState ags = gs;
-            ags.ctm = place.mul(ctm);
-            Interp ai;
-            ai.doc = doc;
-            ai.cv = &cv;
-            ai.st = st;
-            ai.textSink = nullptr;
-            ai.devToPage = ags.ctm.inverse();
-            ai.exec(adata, doc->resolve(form->get("Resources")), ags);
+
+            if (!painted && sub != "Link" && sub != "Popup")
+                paintAnnotFallback(doc, cv, ctm, sub, an);
         }
     }
 

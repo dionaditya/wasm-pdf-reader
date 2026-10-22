@@ -52,9 +52,13 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   Arabic and CJK) are patched with a synthetic one instead of falling back to a
   substitute face. Advances come from `/W`, falling back to the face's `hmtx`.
 - **Annotations** — link annotations (`/URI`, `/GoTo`, direct `/Dest` and named
-  destinations) are exposed as data and rendered as clickable overlays; other
-  annotations are drawn from their `/AP` appearance streams, which is where
-  signatures, stamps and meterai actually live.
+  destinations) are exposed as data and rendered as clickable overlays; every
+  other annotation is drawn from its `/AP` appearance stream, which is where
+  signatures, stamps and meterai actually live. Markup annotations that ship
+  without an appearance (the common case for highlight, underline, strikeout
+  and squiggly) are synthesised from `/QuadPoints` and `/C`, including one mark
+  per quad; `/Text` notes without an `/AP` icon get a note icon built from
+  `/Rect`. An appearance stream always wins when present.
 - **Text layer** — glyph runs with page-space boxes, so you can select, copy,
   search and draw highlights without a second parser. The viewer mounts a
   transparent `.wpdf-textlayer` over the canvas (each run is a span, stretched
@@ -69,7 +73,9 @@ approximated: text shaping for scripts that are not stored pre-shaped (Arabic,
 Indic), Type3 fonts, mesh shadings (4–7), transparency groups and blend modes,
 `/SMask` on form XObjects, non-Identity CMaps, outlines/bookmarks, form fields
 and XFA, public-key encryption, and ranged/streamed loading (the whole file is
-resident in wasm memory).
+resident in wasm memory). Annotations render but are not interactive beyond
+links: there is no panel for note text, and a highlight uses alpha rather than
+a multiply blend, so overlapping marks darken instead of saturating.
 
 ## Security notes
 
@@ -246,7 +252,7 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, encryption (36 checks)
+npm test              # core: parse, raster, text, search, links, annotations, encryption (40 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:visual   # rewrite the pixel baseline after an intended change

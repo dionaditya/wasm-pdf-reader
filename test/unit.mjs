@@ -241,6 +241,80 @@ await check('links: pages without annotations report none', () => {
 });
 linksDoc.close();
 
+// ── annotation fallbacks: /QuadPoints marks and note icons without /AP ─────
+const annotDoc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', 'annot-quads.pdf')));
+
+function countPixels(imageData, predicate) {
+  const { data, width, height } = imageData;
+  let n = 0;
+  for (let i = 0; i < width * height; i++) {
+    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    if (predicate(r, g, b)) n++;
+  }
+  return n;
+}
+
+await check('annotations: /QuadPoints paint highlight, underline, strikeout, squiggly', async () => {
+  const { imageData } = await annotDoc.render(0, { scale: 1 });
+  const yellow = countPixels(imageData, (r, g, b) => r > 200 && g > 200 && b < 215 && b > 90);
+  const red = countPixels(imageData, (r, g, b) => r > 140 && g < 110 && b < 110);
+  const blue = countPixels(imageData, (r, g, b) => b > 140 && r < 110 && g < 110);
+  const green = countPixels(imageData, (r, g, b) => g > 90 && r < 110 && b < 110);
+  assert.ok(yellow > 4000, `highlight should fill two quads, got ${yellow} px`);
+  assert.ok(red > 250, `underline should be a red bar, got ${red} px`);
+  assert.ok(blue > 250, `strikeout should be a blue bar, got ${blue} px`);
+  assert.ok(green > 250, `squiggly should be a green zigzag, got ${green} px`);
+
+  // the red underline belongs under the third line: device y = pageHeight - baseline
+  const { data, width, height } = imageData;
+  let minY = height, maxY = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (data[i] > 140 && data[i + 1] < 110 && data[i + 2] < 110) {
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  assert.ok(Math.abs(minY - (792 - 656)) <= 4, `underline sits at the text baseline, got y=${minY}`);
+});
+
+await check('annotations: text notes draw an icon from /Rect alone', async () => {
+  const { imageData } = await annotDoc.render(1, { scale: 1 });
+  const { width, data } = imageData;
+  for (let i = 0; i < 3; i++) {
+    // note rect is [460, 690-40i, 480, 710-40i] in page space, 20x20
+    const px0 = 458, px1 = 482;
+    const py0 = 792 - 712 - i * -40, py1 = 792 - 688 - i * -40;
+    let ink = 0;
+    for (let y = Math.min(py0, py1); y < Math.max(py0, py1); y++) {
+      for (let x = px0; x < px1; x++) {
+        const j = (y * width + x) * 4;
+        if (data[j] < 245 || data[j + 1] < 245 || data[j + 2] < 245) ink++;
+      }
+    }
+    assert.ok(ink > 80, `note ${i} should have an icon, got ${ink} px`);
+  }
+});
+
+await check('annotations: an /AP appearance wins over the /QuadPoints fallback', async () => {
+  const { imageData } = await annotDoc.render(2, { scale: 1 });
+  // the quad covers 72..480 x 620..700; a fallback fill would be a huge band
+  const yellow = countPixels(imageData, (r, g, b) => r > 200 && g > 200 && b < 200);
+  assert.ok(yellow < 200, `the quad must not be filled when /AP exists, got ${yellow} px`);
+  assert.equal(imageData.width, 612);
+});
+
+await check('annotations: marks follow the page CTM on a rotated page', async () => {
+  const { imageData } = await annotDoc.render(3, { scale: 1 });
+  assert.equal(imageData.width, 792, 'rotated page swaps its dimensions');
+  assert.equal(imageData.height, 612);
+  const cyan = countPixels(imageData, (r, g, b) => b > 200 && r < 220 && g > 180);
+  assert.ok(cyan > 4000, `highlight should cover the rotated line, got ${cyan} px`);
+});
+annotDoc.close();
+
 // ── encryption ─────────────────────────────────────────────────────────────
 const encExpect = { 'enc-rc4.pdf': 'RC4 40/128', 'enc-aes128.pdf': 'AES-128', 'enc-aes256.pdf': 'AES-256' };
 for (const [file, label] of Object.entries(encExpect)) {
