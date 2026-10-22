@@ -164,9 +164,10 @@ forms — each with its fixture, acceptance numbers, touchpoints and the non-goa
 npm install @dionaditya/wasm-pdf-reader
 ```
 
-0.1.0 is not on the registry yet (the unscoped name was rejected as too close to
-an existing package, hence the scope). Until it is published, install from the
-repository — the built `dist/`, wasm included, is committed:
+The registry carries `0.1.0`. This repository is the source of truth and is at
+`0.2.0` (annotation fallbacks, CJK CMaps, working links); `npm publish` pushes it.
+To track the repository instead of the registry, install from a commit — the
+built `dist/`, wasm included, is committed, so nothing is compiled on install:
 
 ```bash
 npm install github:dionaditya/wasm-pdf-reader
@@ -240,6 +241,24 @@ export default function Preview({ file }) {
 The hooks underneath are public: `usePdfDocument`, `usePdfPage`, `useInView`.
 The core has no React dependency at all, and the components are just one way to
 lay it out.
+
+## Embedding in a host app
+
+The bundle is plain ESM plus one `.wasm` sibling, so a host that ships static
+assets can vendor it with no build step:
+
+- **ownCloud Classic** — [`dionaditya/owncloud_files_pdfviewer`](https://github.com/dionaditya/owncloud_files_pdfviewer)
+  (branch `feat/replace-pdfjs`) replaces the PDF.js viewer with this engine. The
+  route, the `?file=` contract and the CSP stay the app's; parsing, rasterizing,
+  text and annotations are the engine's. The bundle is vendored under
+  `js/vendor/wasm-pdf-reader/` with a `VERSION.json` recording this repo's commit
+  and a per-file sha256, refreshed by `npm run sync-viewer` (see that directory's
+  README). `scripts/sync-viewer.mjs` there is the template for any host that
+  wants "pinned, traceable, no install-time build".
+- **Any page** — `mountPdfReader('#viewer', { file: url })` for the full viewer,
+  or `PdfDocument.open(bytes)` for pixels and text only. Serve
+  `dist/wasm/pdf-reader.wasm` beside `dist/loader.js`; a CSP needs
+  `script-src 'wasm-unsafe-eval'`.
 
 ## API
 
