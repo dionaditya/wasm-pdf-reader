@@ -140,16 +140,36 @@ export function buildTextLayer(items, geo) {
   layer.className = `wpdf-textlayer${geo.className ? ` ${geo.className}` : ''}`;
   const scale = geo.scale || 1;
   const spans = [];
+  // Emit in content-stream order — that is the producer's reading order, and
+  // sorting by position would interleave the two columns of a paper. A run on
+  // a new baseline starts a new line (<br>), a horizontal gap becomes a space:
+  // absolutely positioned spans are separate boxes, so the browser otherwise
+  // copies "WASM PDF READERa PDF parser".
+  let prev = null;
+  let lineOy = null;
   for (const item of items) {
     if (!item.text) continue;
+    const fs = item.fs > 0.1 ? item.fs : 10;
+    if (lineOy === null) lineOy = item.oy;
+    else if (Math.abs(item.oy - lineOy) > fs * 0.5) {
+      layer.appendChild(document.createElement('br'));
+      lineOy = item.oy;
+      prev = null;
+    }
+    if (prev && Math.abs(item.oy - prev.oy) <= fs * 0.5) {
+      const gap = item.ox - (prev.ox + prev.adv);
+      if (gap > fs * 0.14 && !item.text.startsWith(' ') && !(prev.text || '').endsWith(' '))
+        layer.appendChild(document.createTextNode(' '));
+    }
     const css = boxToCss(item, { height: geo.height, boxY0: geo.boxY0 ?? 0, scale });
     const span = document.createElement('span');
     span.textContent = item.text;
     span.style.left = `${css.left}px`;
     span.style.top = `${css.top}px`;
-    span.style.fontSize = `${Math.max(0.5, item.fs * scale)}px`;
+    span.style.fontSize = `${Math.max(0.5, fs * scale)}px`;
     layer.appendChild(span);
     spans.push({ span, width: Math.max(1, css.width) });
+    prev = item;
   }
   // Stretch each run to the width the engine measured: without this a
   // substitute face drifts and selections land on the wrong glyphs.
