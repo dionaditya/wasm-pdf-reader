@@ -115,9 +115,15 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     if (fitMode === 'none') return controlledScale;
     const availW = Math.max(120, (viewportBox.width || 800) - PAD);
     const availH = Math.max(120, (viewportBox.height || 800) - PAD);
-    const s = fitMode === 'page'
+    let s = fitMode === 'page'
       ? Math.min(availW / size.width, availH / size.height)
       : availW / size.width;
+    // The viewport is a flex item, so a wide page can stretch it and feed
+    // fit-width a larger width next frame - the scale then runs away to the
+    // clamp. A fitted page never needs to be wider than the window.
+    if (typeof window !== 'undefined' && size.width > 0) {
+      s = Math.min(s, (window.innerWidth * 0.98) / size.width);
+    }
     return Math.max(0.1, Math.min(8, s || controlledScale));
   }, [doc, pageCount, page, controlledScale, activeFit, viewportBox]);
 

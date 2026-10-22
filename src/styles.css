@@ -102,6 +102,9 @@
 .wpdf-viewport {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;   /* a flex item defaults to min-width:auto, so a wide page
+                     would stretch the viewport and feed fit-width a growing
+                     width: the scale ran away to the 8x clamp */
   overflow: auto;
   display: flex;
   align-items: flex-start;
