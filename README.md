@@ -71,6 +71,28 @@ Indic), Type3 fonts, mesh shadings (4–7), transparency groups and blend modes,
 and XFA, public-key encryption, and ranged/streamed loading (the whole file is
 resident in wasm memory).
 
+## Limits
+
+- **The whole file is resident.** No ranged loading: the PDF sits in the wasm
+  heap while it is open, plus the parsed objects and, per page, one RGBA bitmap.
+  For text documents that is roughly the file size; scans add the decoded image.
+  Measured: a 78 MB / 16-page PDF of full-page JPEGs opens and renders its first
+  page in ~0.8 s on desktop.
+- **The heap is capped at 1 GiB** (`-sMAXIMUM_MEMORY=1073741824`). A 4 GiB
+  ceiling looked harmless and broke phones: iOS refuses to grow a module that
+  has asked to reserve that much address space, so allocation failed early with
+  a misleading `out of memory`. Beyond ~1 GiB, shrink the file instead.
+- **One page, 40 MP.** A page is rendered whole, so `scale` is bounded by pixel
+  count: 40 MP is the ceiling (a 10000×10000 px page is refused). Failures say
+  which limit they hit:
+  - `render failed: page needs 10000x10000 px (100.0 MP) at this scale; the
+    renderer caps a page at 40 MP`
+  - `render failed: not enough memory for a 6000x8000 px page (183 MB); the wasm
+    heap could not grow`
+- **Encrypted files need their password up front.** There is no callback asking
+  the handler for one mid-parse; pass `password` to `open()` (the demo prompts
+  once and retries).
+
 ## Install
 
 ```bash
@@ -157,7 +179,7 @@ lay it out.
 ## API
 
 ```js
-PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename })
+PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename, password })
   .pageCount                       // number
   .metadata                        // { Title, Author, Subject, Producer, ... }
   .warnings                        // ["rebuilt xref", ...]
@@ -179,7 +201,7 @@ Full types ship with the package (`dist/index.d.ts`, `dist/react/index.d.ts`).
 ```bash
 npm install
 node examples/build-react.mjs     # bundles the React demo
-node examples/server.mjs          # http://localhost:5177/
+node examples/server.mjs 4444      # http://localhost:4444/
 ```
 
 - `http://localhost:5177/examples/vanilla/`
