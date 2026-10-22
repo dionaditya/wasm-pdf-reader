@@ -1101,6 +1101,30 @@ void Interp::doXObject(ObjP ref, ObjP resources, GState& gs, const std::string& 
     if (!doc->decodeStream(xo, data)) { st->note("form stream"); return; }
     GState sub = gs;
     sub.ctm = m.mul(gs.ctm);
+
+    // A form is clipped to /BBox. Producers rely on that: this figure's form
+    // opens with a white rectangle of 1152x2199 units to clear its background,
+    // and without the clip that rectangle paints over the rest of the page.
+    ObjP bb = doc->resolve(xo->get("BBox"));
+    if (bb && bb->t == O_ARR && bb->arr.size() == 4) {
+        double v[4];
+        for (int i = 0; i < 4; i++) v[i] = num(doc->resolve(bb->arr[i]), i < 2 ? 0 : 1);
+        double x0 = std::min(v[0], v[2]), x1 = std::max(v[0], v[2]);
+        double y0 = std::min(v[1], v[3]), y1 = std::max(v[1], v[3]);
+        if (x1 - x0 > 0.01 && y1 - y0 > 0.01) {
+            const double px[4] = {x0, x1, x1, x0}, py[4] = {y0, y0, y1, y1};
+            Poly box;
+            for (int i = 0; i < 4; i++) {
+                double dx, dy;
+                sub.ctm.apply(px[i], py[i], dx, dy);
+                box.push_back(Pt{(float)dx, (float)dy});
+            }
+            Polys polys;
+            polys.push_back(box);
+            sub.clip = ClipPolys(*cv, gs.clip, polys, false);
+        }
+    }
+
     depth++;
     exec(data, res, sub);
     depth--;
@@ -1361,10 +1385,16 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
         } else if (op == "M") {
             gs.miter = numArg(1, 10);
         } else if (op == "d") {
+            // operands are pushed in order, so the array is the second-from-top
+            // object and the phase is the last; reading stack.back() found the
+            // phase number and silently dropped every dash pattern.
             gs.dash.clear();
-            if (!stack.empty() && stack.back()->t == O_ARR)
-                for (auto& e : stack.back()->arr) gs.dash.push_back(num(doc->resolve(e), 0));
-            gs.dashPhase = numArg(2, 0);
+            if (stack.size() >= 2) {
+                ObjP arr = stack[stack.size() - 2];
+                if (arr && arr->t == O_ARR)
+                    for (auto& e : arr->arr) gs.dash.push_back(num(doc->resolve(e), 0));
+            }
+            gs.dashPhase = numArg(1, 0);
         } else if (op == "ri" || op == "i") {
             // ignore rendering intent / flatness
         } else if (op == "gs") {
