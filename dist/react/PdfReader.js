@@ -95,7 +95,10 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     if (fitMode === "none") return controlledScale;
     const availW = Math.max(120, (viewportBox.width || 800) - PAD);
     const availH = Math.max(120, (viewportBox.height || 800) - PAD);
-    const s = fitMode === "page" ? Math.min(availW / size.width, availH / size.height) : availW / size.width;
+    let s = fitMode === "page" ? Math.min(availW / size.width, availH / size.height) : availW / size.width;
+    if (typeof window !== "undefined" && size.width > 0) {
+      s = Math.min(s, window.innerWidth * 0.98 / size.width);
+    }
     return Math.max(0.1, Math.min(8, s || controlledScale));
   }, [doc, pageCount, page, controlledScale, activeFit, viewportBox]);
   useEffect(() => {
