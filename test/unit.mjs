@@ -356,6 +356,40 @@ await check('CMaps: mixed 1-byte and 2-byte codespaces decode in order', async (
 });
 cjkDoc.close();
 
+// ── API contract: nothing that promises a value may return undefined ───────
+// The mupdf.js #199 shape — a binding that calls into wasm but forgets to
+// return the result — is invisible until a caller branches on it, so pin every
+// query on a real document to its declared shape.
+await check('api: every query returns a value of its declared type', async () => {
+  const sample = await readFile(join(root, 'test', 'fixtures', 'reader-sample.pdf'));
+  const doc = await PdfDocument.open(sample);
+  const checks = [
+    ['pageCount', doc.pageCount, 'number', 3],
+    ['getPageSize', doc.getPageSize(0), 'object', null],
+    ['getText', doc.getText(0), 'object', null],
+    ['getPageText', doc.getPageText(0), 'string', null],
+    ['getAllText', doc.getAllText(), 'object', null],
+    ['search', doc.search('the'), 'object', null],
+    ['getLinks', doc.getLinks(0), 'object', null],
+    ['metadata', doc.metadata, 'object', null],
+    ['warnings', doc.warnings, 'object', null],
+    ['stats', doc._stats(0), 'object', null],
+    ['boxToCss', doc.boxToCss({ x0: 0, y0: 0, x1: 10, y1: 10 }, 0, 1), 'object', null],
+  ];
+  for (const [name, value, type, exact] of checks) {
+    assert.notEqual(value, undefined, `${name}() returned undefined`);
+    assert.equal(typeof value, type, `${name}() should be a ${type}, got ${typeof value}`);
+    if (exact !== null) assert.equal(value, exact);
+  }
+  const size = doc.getPageSize(0);
+  for (const k of ['width', 'height', 'rotation']) {
+    assert.equal(typeof size[k], 'number', `getPageSize().${k} should be a number`);
+  }
+  assert.ok(typeof doc.pageCount === 'number' && doc.pageCount > 0);
+  assert.equal(typeof (await import('../dist/index.js')).version, 'string', 'version should be a string');
+  doc.close();
+});
+
 // ── shared indirect objects (the reading side of a stream must survive reuse) ─
 const sharedDoc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', 'shared-xobject.pdf')));
 

@@ -184,6 +184,14 @@ try {
     await page.waitFor('!document.querySelector(".wpdf-highlight")', { label: 'highlights cleared' });
   });
 
+  await step('viewer capability probes return booleans, not undefined', async () => {
+    // The mupdf.js #199 shape: a probe that silently returns undefined makes
+    // every `if (probe())` branch dead. Assert the type, not truthiness.
+    assert.equal(await page.eval('typeof window.viewer.isContinuous()'), 'boolean');
+    assert.equal(await page.eval('typeof window.viewer.state.page'), 'number');
+    assert.equal(await page.eval('typeof window.viewer.document.pageCount'), 'number');
+  });
+
   await step('continuous mode stacks every page', async () => {
     await page.eval('document.getElementById("continuous").click()');
     await page.waitFor('document.querySelectorAll(".wpdf-page").length === 3', { label: 'continuous layout' });
