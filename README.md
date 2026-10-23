@@ -1,7 +1,7 @@
 # wasm-pdf-reader
 
 A PDF reader in WebAssembly: it parses, rasterizes and extracts text from a PDF
-inside the browser tab. No server, no upload, no CDN — a 2.9 MB module (1.8 MB
+inside the browser tab. No server, no upload, no CDN — a 3.0 MB module (1.8 MB
 gzipped, 0.9 MB of it the Adobe CMap tables) that a vanilla page or a React app
 can drive.
 
@@ -48,7 +48,7 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   file.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
   clipping, text, Form and Image XObjects, inline images, `/Rotate` pages,
-  axial and radial shadings, mesh shadings (types 4/5, approximate), tiling patterns (`/PatternType 1`, cached per
+  axial and radial shadings, tiling patterns (`/PatternType 1`, cached per
   pattern and scale, clipped to the painted path), shading patterns, all 15 PDF
   blend modes, `/Group /Transparency` compositing with `/ca` and `/CA`,
   `/SMask` soft masks and `/Mask` stencil masks.
@@ -108,16 +108,18 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 
 Not supported, and reported through `document.warnings` rather than silently
 approximated: text shaping for scripts that are not stored pre-shaped (Arabic,
-Indic), Type3 fonts, mesh shadings 6–7 (patch meshes; 4/5 render but are not
-yet verified against MuPDF), soft masks attached with `gs /SMask`
-(a group's own `/ca` and `/BM` do work), non-isolated transparency groups
-(they are composited isolated, which only differs when the group relies on the
-page backdrop), vertical writing (`-V` CMaps paint horizontally),
-outlines/bookmarks, form fields
-and XFA, public-key encryption, and ranged/streamed loading (the whole file is
-resident in wasm memory). Annotations render but are not interactive beyond
-links: there is no panel for note text, and a highlight uses alpha rather than
-a multiply blend, so overlapping marks darken instead of saturating.
+Indic), Type 1 PFB fonts (a substitute face is used), shading types 1, 6 and 7
+(function shadings and Coons/tensor patch meshes), soft masks attached with
+`gs /SMask` (an image's own `/SMask` and a group's `/ca`/`/BM` do work),
+non-isolated transparency groups (they are composited isolated, which only
+differs when the group relies on the page backdrop), vertical writing (`-V`
+CMaps paint horizontally), XFA and form JavaScript (`/AA`), public-key
+encryption, and ranged/streamed loading (the whole file is resident in wasm
+memory). Mesh shadings 4 and 5 decode but are still experimental — see
+[Limits](#limits). Outlines, AcroForm fields (readable and settable in memory)
+and page thumbnails are supported. Annotations render and links are clickable,
+but there is no panel for note text, and a highlight uses alpha rather than a
+multiply blend, so overlapping marks darken instead of saturating.
 
 ## Rendered examples
 
@@ -189,17 +191,29 @@ with a global symbol dictionary, drawn at 1:1:
   64x48 image differs from MuPDF by 14/255 and a grey ramp by 74/255, while the
   same images as JPEG, CCITT or JBIG2 match to ~2/255. Fixable; until then do
   not trust `/JPXDecode` pages.
+- **Mesh shadings 4/5 are experimental.** The triangles fill, but neither type
+  is verified: on `test/fixtures/mesh.pdf` the type 4 page is malformed (it
+  omits the per-vertex edge flag), so MuPDF paints nothing and our gradient only
+  proves we are more permissive; the type 5 lattice disagrees with MuPDF by
+  87/255 because the cells are connected in the wrong order. Types 1 (function
+  shading), 6 (Coons) and 7 (tensor) are unimplemented and raise a warning. See
+  M4 in [`ROADMAP.md`](ROADMAP.md).
 - **Encrypted files need their password up front.** There is no callback asking
   the handler for one mid-parse; pass `password` to `open()` (the demo prompts
   once and retries).
 
 ## Roadmap
 
-[`ROADMAP.md`](ROADMAP.md) carries the ordered gap list to MuPDF-grade output —
-ICC colour management (parser landed, not yet wired into every colour path),
-mesh shadings, Separation/DeviceN, the JPEG 2000 decoder, Type3/Type1 fonts,
-OCG and forms — each with its fixture, acceptance numbers, touchpoints and the non-goals
-(shaping, writing, OCR, other formats) that are deliberately out of scope.
+[`ROADMAP.md`](ROADMAP.md) is the ordered gap list to MuPDF-grade output. M1–M8
+have landed: ICC parsing (images only — fills still go through the calibrated
+CMYK table), tiling patterns, blend modes and transparency groups,
+Separation/DeviceN, Type3 and `OTTO`-wrapped CFF, OCG visibility, AcroForm
+fields, and the outline, thumbnails and print action. Still open, in order: mesh
+shadings types 1/6/7 (4/5 render but disagree with the reference), the JPEG 2000
+decoder (OpenJPEG codestreams decode to noise), Type1 PFB fonts, full ICC
+coverage for fills, and the M9 architecture work (worker, ranged loading,
+display list). Non-goals — shaping, writing, OCR, other input formats — are
+listed there too.
 
 ## Install
 
@@ -208,8 +222,10 @@ npm install @dionaditya/wasm-pdf-reader
 ```
 
 The registry carries `0.1.0`. This repository is the source of truth and is at
-`0.2.0` (annotation fallbacks, CJK CMaps, working links); `npm publish` pushes it.
-To track the repository instead of the registry, install from a commit — the
+`0.3.0` — tiling patterns, blend modes and transparency groups,
+Separation/DeviceN, Type3 and CMap fonts, OCG and AcroForm, the outline and the
+page rail; `npm publish` pushes it. To track the repository instead of the
+registry, install from a commit — the
 built `dist/`, wasm included, is committed, so nothing is compiled on install:
 
 ```bash
@@ -357,7 +373,7 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (43 checks)
+npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (62 checks)
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus

@@ -1,6 +1,6 @@
 # Roadmap — from "reads most PDFs" to MuPDF-grade output
 
-Last verified: 2026-10-23 (wasm 2.9 MB, 1.8 MB gzipped; 43 unit checks; 13 e2e steps).
+Last verified: 2026-10-23 (wasm 3.0 MB, 1.8 MB gzipped; 62 unit checks; 14 e2e steps).
 
 MuPDF is both the target and the oracle: every claim below is measured against it
 with `~/pdfvenv/bin/python` + `pymupdf` at `Matrix(1,1)`, comparing ink ratio and
@@ -20,13 +20,14 @@ fixture that fails today.
 | Paths, clips, dashes, axial/radial shadings, form XObjects | done | fixtures + vision |
 | Tiling patterns | done (45° checker AA still short of the gate) | `patterns.pdf`: hatch 1.41, axis checker 0.29, rotated checker 7.65 vs MuPDF |
 | Blend modes, transparency groups | done | `transparency.pdf`: Multiply 0.42, `/ca 0.5` group 0.54 |
-| Mesh shadings | in progress | types 4/5 decode and Gouraud-fill; not yet within the gate, 6/7 warn |
+| Mesh shadings | **partial, unverified** | types 4/5 fill, but `mesh.pdf` disagrees: page 2 (type 5) 87/255, page 1 (type 4) paints where MuPDF paints nothing because the fixture omits the per-vertex edge flag; types 1/6/7 warn |
 | ICC colour management | partial | `iccp.cpp` parses matrix/TRC and A2B0 LUTs; wired into images only, fills still `cmykToRgb` |
 | Separation/DeviceN | done | `spot.pdf`: spot and two-ink fills render their alternate space |
 | Type3, CID-CFF in OpenType | done | `type3.pdf` matches MuPDF exactly; OTTO table extraction added |
 | Type1 PFB | **missing** | substitute face |
 | OCG visibility | done | `ocg.pdf` matches MuPDF exactly |
-| Widgets/forms | done | `form.pdf` at 2.87/255; list boxes paint every option with the selected row highlighted (MuPDF overlaps its rows) |
+| Widgets/forms | done | `form.pdf` at 2.87/255; list boxes paint every option with the selected row highlighted (MuPDF overlaps its rows), buttons get a tick |
+| Outline, thumbnails, print | done | `document.outline` unit check; page rail renders lazily; print rasterizes every page |
 
 Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
 ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
@@ -54,12 +55,12 @@ ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
    && node test/e2e.mjs`, then push `main`, rebuild `_site`, push `gh-pages`,
    and sha256-compare the served wasm against local. A deploy is not done until
    the hashes match.
-7. **Budget the wasm.** 2.9 MB today; keep the ceiling at 4 MB. lcms2 (~400 KB)
+7. **Budget the wasm.** 3.0 MB today; keep the ceiling at 4 MB. lcms2 (~400 KB)
    and a full openjpeg port (~1 MB) both fit if nothing else grows.
 
 ## Milestones, in order
 
-### M1 — ICC colour management (3–4 days) — *parser landed*
+### M1 — ICC colour management (3–4 days) — *partial: parser + images, fills still table-driven*
 *Why*: every print-derived PDF is CMYK or carries an ICC profile; today the raw
 values are painted, so colour is visibly off next to MuPDF. Biggest visible win
 per day of work.
@@ -120,7 +121,7 @@ one page per non-separable mode.
 *Risk*: memory — a group buffer per nested form. Cap the nesting depth (say 8)
 and fall back to direct painting with a warning.
 
-### M4 — Mesh shadings 4–7 and shading type 1 (3–5 days)
+### M4 — Mesh shadings 4–7 and shading type 1 (3–5 days) — *partial: 4/5 landed, 1/6/7 open*
 *Why*: gradient-heavy marketing PDFs, charts, and background artwork.
 *Where*: `Interp::paintShading` (~line 1009), which currently rejects anything
 that is not type 2/3.
@@ -133,6 +134,22 @@ subdivision — start with a fixed 4×4 subdivision and check the seam.
 type 1 function shading.
 *Accept*: ≤ 3/255 mean abs diff per page; banding-free on a smooth gradient.
 *Risk*: type 7 is the long tail — ship 1/4/5/6 first, warn on 7.
+
+*Landed*: `paintMeshShading()` decodes `/BitsPerCoordinate`,
+`/BitsPerComponent` and `/Decode` and Gouraud-fills triangles with 2×2
+subpixel coverage; `scripts/make_shading_fixture.py` writes `mesh.pdf` (one
+type 4 page, one type 5 lattice). Two defects keep the milestone open:
+1. **Type 4 does not read the per-vertex edge flag** that §8.7.4.5.5 requires
+   (`readVertex(tri[i], false, flag)`), and the fixture omits it as well, so the
+   fixture is malformed — MuPDF correctly paints nothing on page 1 while we
+   paint a gradient. Fix the fixture and the reader together; the current
+   "match" proves nothing.
+2. **Type 5 disagrees with MuPDF by 87/255** on page 2: our render folds the
+   lattice into two large triangles instead of connecting the 2×2 cells, so the
+   vertex ordering is wrong, not just the edge quality (ink 0.69 vs 0.96).
+Types 1 (function shading), 6 (Coons) and 7 (tensor) still warn and paint
+nothing. Do not describe mesh shadings as supported in the README until both
+numbers are inside the gate.
 
 ### M5 — Separation / DeviceN and tint transforms (2 days) — *done*
 *Why*: spot colours (brand inks, meterai-style stamps) currently collapse into a
@@ -148,7 +165,7 @@ alternate space; `/DeviceN` = n tints → same. Then colour-manage through M1.
 alternate, not as black.
 *Risk*: postscript-function types 0 and 4 — reuse `ShadingFn::eval`, extend it.
 
-### M6 — JPEG 2000 decoder (3–5 days)
+### M6 — JPEG 2000 decoder (3–5 days) — *open*
 *Why*: **broken today** — OpenJPEG-produced codestreams decode to noise while
 MuPDF is correct. This is the only item where the output is garbage rather than
 merely less accurate.
@@ -194,14 +211,16 @@ radio, choice).
 survives a re-render at another scale.
 *Risk*: scope creep into scripting — do not implement `/AA` JavaScript.
 
-### M9 — Architecture (behind the above, do when the UI feels slow)
+### M9 — Architecture (behind the above, do when the UI feels slow) — *viewer extras landed*
 - Web Worker for parse + render (transferables for the RGBA buffer).
 - Ranged loading (`read(offset,len)` behind the parser; Range requests in the
   fetcher) — this is the only way past the 1 GiB whole-file ceiling.
 - Display list + page cache with a memory budget (currently one RGBA per page,
   no eviction).
-- Outlines/bookmarks, thumbnails, document properties — viewer-only, 3–4 days
-  total, good "low risk" filler between rendering milestones.
+- ~~Outlines/bookmarks, thumbnails, document properties~~ — done:
+  `document.outline`, the page rail's lazily rendered thumbnails,
+  `document.metadata`, and a print action that rasterizes every page. Probed by
+  e2e ("viewer capability probes return booleans, not undefined").
 
 ## Non-goals
 
