@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <zlib.h>
+#include <functional>
 
 namespace pdf {
 
@@ -1538,6 +1539,113 @@ static bool cffTableFromSfnt(const std::string& s, std::string& out) {
         }
     }
     return false;
+}
+
+static std::string jsonEscapeText(const std::string& in) {
+    std::string o;
+    o.reserve(in.size() + 8);
+    for (unsigned char ch : in) {
+        switch (ch) {
+            case '"': o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n"; break;
+            case '\r': o += "\\r"; break;
+            case '\t': o += "\\t"; break;
+            default:
+                if (ch < 0x20) { char buf[8]; snprintf(buf, sizeof buf, "\\u%04x", ch); o += buf; }
+                else o += (char)ch;
+        }
+    }
+    return o;
+}
+
+void Document::loadOcg() {
+    ocgLoaded = true;
+    ObjP cat = resolve(trailer ? trailer->get("Root") : nullptr);
+    ObjP ocp = cat ? resolve(cat->get("OCProperties")) : nullptr;
+    if (!ocp) return;
+    ObjP ocgs = resolve(ocp->get("OCGs"));
+    if (ocgs && ocgs->t == O_ARR)
+        for (auto& e : ocgs->arr) {
+            ObjP r = resolve(e);
+            if (r) ocgState[r.get()] = true;     // /BaseState /ON is the default
+        }
+    ObjP d = resolve(ocp->get("D"));
+    if (!d) return;
+    ObjP base = resolve(d->get("BaseState"));
+    if (base && base->t == O_NAME && base->str == "OFF")
+        for (auto& kv : ocgState) ocgState[kv.first] = false;
+    auto apply = [&](const char* key, bool visible) {
+        ObjP arr = resolve(d->get(key));
+        if (!arr || arr->t != O_ARR) return;
+        for (auto& e : arr->arr) {
+            ObjP r = resolve(e);
+            if (r) ocgState[r.get()] = visible;
+        }
+    };
+    apply("ON", true);
+    apply("OFF", false);
+}
+
+bool Document::ocgVisible(const ObjP& ocg) {
+    if (!ocg) return true;
+    if (!ocgLoaded) loadOcg();
+    auto it = ocgState.find(ocg.get());
+    return it == ocgState.end() ? true : it->second;
+}
+
+std::string Document::outlineJson() {
+    std::string out = "[";
+    ObjP cat = resolve(trailer ? trailer->get("Root") : nullptr);
+    ObjP outlines = cat ? resolve(cat->get("Outlines")) : nullptr;
+    if (!outlines) return "[]";
+    // page object -> index, so a /Dest can be reported as a page number
+    std::map<const Obj*, int> pageIndex;
+    ObjP pages = resolve(cat->get("Pages"));
+    std::vector<ObjP> queue;
+    if (pages) queue.push_back(pages);
+    int idx = 0;
+    while (!queue.empty()) {
+        ObjP node = queue.front();
+        queue.erase(queue.begin());
+        if (!node || node->t != O_DICT) continue;
+        ObjP type = resolve(node->get("Type"));
+        std::string tn = type && type->t == O_NAME ? type->str : "";
+        if (tn == "Pages") {
+            ObjP kids = resolve(node->get("Kids"));
+            if (!kids || kids->t != O_ARR) continue;
+            for (auto it = kids->arr.rbegin(); it != kids->arr.rend(); ++it) queue.insert(queue.begin(), resolve(*it));
+        } else {
+            pageIndex[node.get()] = idx++;
+        }
+    }
+
+    bool first = true;
+    std::function<void(ObjP)> walk = [&](ObjP item) {
+        int guard = 0;
+        while (item && item->t == O_DICT && guard++ < 5000) {
+            ObjP title = resolve(item->get("Title"));
+            std::string t = title && title->t == O_STR ? title->str : "";
+            int page = -1;
+            ObjP dest = resolve(item->get("Dest"));
+            if (dest && dest->t == O_ARR && !dest->arr.empty()) {
+                ObjP target = resolve(dest->arr[0]);
+                auto it = pageIndex.find(target.get());
+                if (it != pageIndex.end()) page = it->second;
+            }
+            if (!t.empty()) {
+                if (!first) out += ',';
+                first = false;
+                out += "{\"title\":\"" + jsonEscapeText(t) + "\",\"page\":" + std::to_string(page) + "}";
+            }
+            ObjP child = resolve(item->get("First"));
+            if (child) walk(child);
+            item = resolve(item->get("Next"));
+        }
+    };
+    walk(resolve(outlines->get("First")));
+    out += "]";
+    return out;
 }
 
 Font* Document::font(const ObjP& fontDict) {

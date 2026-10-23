@@ -536,6 +536,14 @@ await check('DeviceN: a two-ink fill is not collapsed to black', async () => {
   const [r, g, b] = pixel(out.imageData, 150, 150);
   assert.ok(r + g + b > 120, `DeviceN pixel ${r},${g},${b} should carry colour`);
 });
+await check('device CMYK is calibrated, not the (1-c)(1-k) guess', async () => {
+  // 20/80/0/0: the arithmetic form gives pure blue-ish (b == 255); the calibrated
+  // table gives the violet the reference renderer shows.
+  const out = await spotDoc.render(1, { scale: 1 });
+  const [r, g, b] = pixel(out.imageData, 150, 150);
+  assert.ok(b < 240 && r > 60, `DeviceN pixel ${r},${g},${b} should not be pure blue`);
+});
+
 spotDoc.close();
 
 const t3Bytes = await readFile(join(root, 'test', 'fixtures', 'type3.pdf'));
@@ -546,5 +554,23 @@ await check('Type3: glyph content streams are painted', async () => {
   assert.ok(ink > 0.01 && ink < 0.05, `Type3 ink ${ink.toFixed(4)} should be ~0.022`);
 });
 t3Doc.close();
+
+// ─── OCG layers, outline, device CMYK calibration ───────────────────────────
+const ocgBytes = await readFile(join(root, 'test', 'fixtures', 'ocg.pdf'));
+const ocgDoc = await PdfDocument.open(ocgBytes, { filename: 'ocg.pdf' });
+
+await check('OCG: a layer listed in /D /OFF does not paint', async () => {
+  const out = await ocgDoc.render(0, { scale: 1.5 });
+  const [r, g, b] = pixel(out.imageData, 100, 100);   // upper block, blue layer is off
+  assert.ok(r > 200 && b < 60, `layer pixel ${r},${g},${b} should be the red layer`);
+});
+
+await check('outline: bookmarks resolve to page indices', async () => {
+  const items = ocgDoc.outline;
+  assert.equal(items.length, 2);
+  assert.equal(items[0].title, 'Latar Merah');
+  assert.equal(items[0].page, 0);
+});
+ocgDoc.close();
 
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

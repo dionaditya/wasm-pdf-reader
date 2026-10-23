@@ -319,6 +319,13 @@ WPDF_EXPORT const char* wpdf_info_json(void* handle) {
 
 // Parse warnings collected while reading the file, as JSON. Empty array for a
 // clean document; a viewer can surface these instead of failing silently.
+WPDF_EXPORT const char* wpdf_outline_json(void* handle) {
+    static std::string out;
+    DocHandle* h = H(handle);
+    out = h ? h->doc.outlineJson() : "[]";
+    return out.c_str();
+}
+
 WPDF_EXPORT const char* wpdf_warnings_json(void* handle) {
     static std::string out;
     DocHandle* h = H(handle);

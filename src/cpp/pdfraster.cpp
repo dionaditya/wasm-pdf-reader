@@ -11,7 +11,8 @@
 #include "stb_truetype.h"
 #include "pdf_glyphs.h"
 #include "fonts_data.h"
-#include "iccp.hpp"   // metric-compatible document faces (Liberation/Carlito/Caladea)
+#include "iccp.hpp"
+#include "cmyk_lut.h"   // metric-compatible document faces (Liberation/Carlito/Caladea)
 
 namespace pdf {
 namespace {
@@ -743,10 +744,45 @@ static double ctmScale(const Mat& m) {
     return det > 1e-12 ? sqrt(det) : 1.0;
 }
 
+// DeviceCMYK has no profile, so the conversion is whatever default the engine
+// ships. The arithmetic form, (1-c)(1-k), is far too saturated next to the
+// reference renderer (20/80/0/0 came out royal blue instead of violet), so the
+// default is a 9^4 table sampled from that renderer and interpolated here.
+// scripts/make_cmyk_lut.py regenerates it.
 static void cmykToRgb(double c, double m, double y, double k, float* out) {
-    out[0] = (float)((1 - c) * (1 - k));
-    out[1] = (float)((1 - m) * (1 - k));
-    out[2] = (float)((1 - y) * (1 - k));
+    const int N = kCmykLutN;
+    auto axis = [N](double v) {
+        v = v < 0 ? 0 : (v > 1 ? 1 : v);
+        double x = v * (N - 1);
+        int i = (int)x;
+        if (i >= N - 1) i = N - 2;
+        return std::pair<int, double>(i, x - i);
+    };
+    auto [ci, cf] = axis(c);
+    auto [mi, mf] = axis(m);
+    auto [yi, yf] = axis(y);
+    auto [ki, kf] = axis(k);
+    float acc[3] = {0, 0, 0};
+    for (int dk = 0; dk < 2; dk++) {
+        double wk = dk ? kf : 1.0 - kf;
+        for (int dy = 0; dy < 2; dy++) {
+            double wy = wk * (dy ? yf : 1.0 - yf);
+            for (int dm = 0; dm < 2; dm++) {
+                double wm = wy * (dm ? mf : 1.0 - mf);
+                for (int dc = 0; dc < 2; dc++) {
+                    double w = wm * (dc ? cf : 1.0 - cf);
+                    if (w == 0.0) continue;
+                    int idx = (ci + dc) + N * (mi + dm) + N * N * (yi + dy) + N * N * N * (ki + dk);
+                    acc[0] += (float)(w * kCmykLut[idx][0]);
+                    acc[1] += (float)(w * kCmykLut[idx][1]);
+                    acc[2] += (float)(w * kCmykLut[idx][2]);
+                }
+            }
+        }
+    }
+    out[0] = acc[0] * (1.f / 255.f);
+    out[1] = acc[1] * (1.f / 255.f);
+    out[2] = acc[2] * (1.f / 255.f);
 }
 
 static double num(ObjP o, double def) { return o ? objNum(o, def) : def; }
@@ -1336,8 +1372,8 @@ static bool evalFunctionN(Document* doc, ObjP fn, const double* in, int nIn, dou
             double w = 1.0;
             size_t idx = 0;          // sample index in the m-dimensional grid
             size_t stride = 1;
-            for (int i = m - 1; i >= 0; i--) {
-                int bit = (c >> i) & 1;
+            for (int i = 0; i < m; i++) {      // PDF orders samples with input 0 fastest
+                int bit = (c >> (m - 1 - i)) & 1;
                 int coord = bit ? hi[i] : lo[i];
                 w *= bit ? f[i] : (1.0 - f[i]);
                 idx += (size_t)coord * stride;
@@ -1789,6 +1825,8 @@ void Interp::doXObject(ObjP ref, ObjP resources, GState& gs, const std::string& 
         st->note("xobject " + subtype);
         return;
     }
+    ObjP oc = doc->resolve(xo->get("OC"));
+    if (oc && !doc->ocgVisible(oc)) return;      // layer switched off
     if (depth > 6) return;
     ObjP res = doc->resolve(xo->get("Resources"));
     if (!res) res = resources;
@@ -2110,6 +2148,7 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
         return num(stack[stack.size() - back], def);
     };
     std::string lastPathName;
+    int skipDepth = 0;      // inside a hidden /OC marked-content section
 
     ContentLexer lx(data.data(), data.size());
     Tok t;
@@ -2135,6 +2174,40 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
         if (t.type != T_OP) continue;
 
         const std::string& op = t.s;
+
+        // Optional content: "/OC /MC0 BDC ... EMC" brackets a layer. When the
+        // OCG is off in /OCProperties we skip the whole section, including any
+        // nested marked content, and ignore every operator inside it.
+        if (op == "BDC" || op == "BMC") {
+            if (skipDepth > 0) {
+                skipDepth++;
+            } else if (op == "BDC" && stack.size() >= 2) {
+                ObjP props = stack.back();
+                ObjP dict = props;
+                if (props && props->t == O_NAME) {
+                    ObjP propRes = resources ? doc->resolve(resources->get("Properties")) : nullptr;
+                    dict = propRes ? doc->resolve(propRes->get(props->str.c_str())) : nullptr;
+                }
+                if (dict && dict->t == O_DICT) {
+                    // The property list is usually << /OCG n 0 R >>, but it may
+                    // also be the OCG dictionary itself (Type /OCG).
+                    std::string dtype = objName(doc->resolve(dict->get("Type")));
+                    ObjP ocg = dtype == "OCG" ? dict : doc->resolve(dict->get("OCG"));
+                    if (ocg && !doc->ocgVisible(ocg)) skipDepth = 1;
+                }
+            }
+            stack.clear();
+            continue;
+        }
+        if (op == "EMC") {
+            if (skipDepth > 0) skipDepth--;
+            stack.clear();
+            continue;
+        }
+        if (skipDepth > 0) {
+            stack.clear();
+            continue;
+        }
         st->ops++;
 
         if (op == "q") {

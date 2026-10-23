@@ -1,0 +1,55 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R /OCProperties 8 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Properties << /MC0 4 0 R /MC1 5 0 R >> >> /Contents 7 0 R >>
+endobj
+4 0 obj
+<< /Type /OCG /Name (Latar Merah) >>
+endobj
+5 0 obj
+<< /Type /OCG /Name (Latar Biru) >>
+endobj
+6 0 obj
+<< /Type /Outlines /First 9 0 R /Last 10 0 R /Count 2 >>
+endobj
+7 0 obj
+<< /Length 91  >>
+stream
+/OC /MC0 BDC 1 0 0 rg 30 30 240 240 re f EMC
+/OC /MC1 BDC 0 0 1 rg 30 160 240 110 re f EMC
+
+endstream
+endobj
+8 0 obj
+<< /OCGs [4 0 R 5 0 R] /D << /OFF [5 0 R] /Order [4 0 R 5 0 R] >> >>
+endobj
+9 0 obj
+<< /Title (Latar Merah) /Parent 6 0 R /Next 10 0 R /Dest [3 0 R /Fit] >>
+endobj
+10 0 obj
+<< /Title (Halaman Satu) /Parent 6 0 R /Prev 9 0 R /Dest [3 0 R /XYZ 0 300 0] >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000015 00000 n 
+0000000100 00000 n 
+0000000157 00000 n 
+0000000301 00000 n 
+0000000353 00000 n 
+0000000404 00000 n 
+0000000476 00000 n 
+0000000618 00000 n 
+0000000702 00000 n 
+0000000790 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+887
+%%EOF

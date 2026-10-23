@@ -61,9 +61,11 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   into `pdf-reader.wasm`, so scans decode in the same pass as everything else —
   no second binary, no JS hand-off, no re-render. Stencil `/Mask` streams decode
   through the same path.
-- **Colour** — DeviceGray/RGB/CMYK, ICCBased profiles (matrix/TRC and A2B0
-  LUTs), `/Separation` and `/DeviceN` spot inks through their tint transform
-  (sampled, exponential or stitched function), `/Indexed`.
+- **Colour** — DeviceGray/RGB/CMYK (CMYK through a 9^4 table calibrated against
+  the reference renderer, because device CMYK has no profile of its own),
+  ICCBased profiles (matrix/TRC and A2B0 LUTs), `/Separation` and `/DeviceN`
+  spot inks through their tint transform (sampled, exponential or stitched
+  function), `/Indexed`.
 - **Fonts** — TrueType (`/FontFile2`), bare CFF and CID-keyed CFF, CFF inside
   an OpenType (`OTTO`) wrapper, and Type3 fonts whose glyphs are content
   streams
@@ -84,6 +86,10 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   and squiggly) are synthesised from `/QuadPoints` and `/C`, including one mark
   per quad; `/Text` notes without an `/AP` icon get a note icon built from
   `/Rect`. An appearance stream always wins when present.
+- **Optional content** — `/OCProperties` `/OFF`/`/ON` decide which OCGs paint;
+  hidden `/OC ... BDC` sections and XObjects with an `/OC` entry are skipped.
+- **Outline** — `document.outline` returns `[{title, page}]` for the bookmark
+  tree.
 - **Viewer chrome** — page rail with lazily rendered thumbnails and a print
   action that rasterizes every page at ~120 dpi into a detached sheet, prints it
   and discards it (no print stylesheet can reach into the host page).

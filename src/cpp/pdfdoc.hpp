@@ -153,6 +153,16 @@ struct Document {
     int pageIndex(const ObjP& pageRef);            // ref -> index, -1 if unknown
 
     // ── stream decoding ──────────────────────────────────────────────────
+    // Optional content (layers): /OCProperties decides which OCGs are visible
+    // in the default configuration. Rendering consults this for /OC marked
+    // content and for XObjects that carry an /OC entry.
+    bool ocgVisible(const ObjP& ocg);
+    void loadOcg();
+    std::map<const Obj*, bool> ocgState;
+    bool ocgLoaded = false;
+    // Document outline (bookmarks) as JSON, resolved against the page list.
+    std::string outlineJson();
+
     bool decodeStream(const ObjP& stm, std::string& out);
     bool hasFilter(const ObjP& stm, const char* name);
     // JPEG 2000 images carry their own geometry and component count, so they
