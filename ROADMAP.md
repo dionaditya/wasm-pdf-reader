@@ -18,8 +18,11 @@ fixture that fails today.
 | Images: JPEG 2000 | **broken for most encoders** | flat colour 14/255, grey ramp 74/255 vs MuPDF |
 | Annotations: `/AP` streams, QuadPoints markup, `/Text` icons | done | `annot-quads.pdf` ink within 0.001 |
 | Paths, clips, dashes, axial/radial shadings, form XObjects | done | fixtures + vision |
-| Tiling patterns, blend modes, transparency groups, mesh shadings | **missing** | grep: no `Pattern`, no `BM`, no `Group /Transparency` |
-| Separation/DeviceN, ICC-managed colour | **missing** | `cmykToRgb` only, ICC read for `N` |
+| Tiling patterns | done (45° checker AA still short of the gate) | `patterns.pdf`: hatch 1.41, axis checker 0.29, rotated checker 7.65 vs MuPDF |
+| Blend modes, transparency groups | done | `transparency.pdf`: Multiply 0.42, `/ca 0.5` group 0.54 |
+| Mesh shadings | **missing** | `paintShading` rejects type 1 and 4–7 |
+| ICC colour management | partial | `iccp.cpp` parses matrix/TRC and A2B0 LUTs; wired into images only, fills still `cmykToRgb` |
+| Separation/DeviceN | **missing** | `cmykToRgb` only, ICC read for `N` |
 | Type3, Type1 PFB, CID-CFF in OpenType wrapper | **missing** | substitute face |
 | Widgets/forms/OCG | **missing** | no `AcroForm`, no `OCProperties` |
 
@@ -54,7 +57,7 @@ ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
 
 ## Milestones, in order
 
-### M1 — ICC colour management (3–4 days)
+### M1 — ICC colour management (3–4 days) — *parser landed*
 *Why*: every print-derived PDF is CMYK or carries an ICC profile; today the raw
 values are painted, so colour is visibly off next to MuPDF. Biggest visible win
 per day of work.
@@ -71,7 +74,7 @@ Keep the fast path (no profile, gray/RGB) untouched.
 untagged pages unchanged within 0.2/255.
 *Risk*: transform setup cost per page — cache per profile, not per pixel.
 
-### M2 — Tiling patterns (1–2 days)
+### M2 — Tiling patterns (1–2 days) — *done*
 *Why*: table backgrounds, watermarks, hatch fills, chart fills. Absent today;
 the operator simply does nothing.
 *Where*: `pdfraster.cpp` — `setColorSpace`/`scn` handling (~line 1610), and a new
@@ -87,7 +90,18 @@ and a pattern used as a text fill colour.
 *Accept*: ≤ 2/255 mean abs diff; no seams at tile boundaries.
 *Risk*: unbounded tile sizes — clamp the tile bitmap allocation like a page.
 
-### M3 — Blend modes and transparency groups (~1 week)
+*Landed*: `paintTilingPattern()` renders the cell once per (pattern, scale) into
+a transparent buffer at 3× device resolution and samples it through the inverse
+of `/Matrix × CTM`, so rotation and skew need no special case; PatternType 2
+routes to the shading painter clipped to the path. Two bugs worth remembering:
+`Mat::mul(X)` applies *this first* (composing the tile offset the other way
+painted every cell outside its own buffer), and averaging texel colour without
+premultiplying drags tile edges towards black. Remaining gap: the 45° checker
+sits at 7.65/255 — the geometry is right and the ink matches within 1%, so what
+is left is edge quality, not placement. Try sampling with bilinear weights or
+rendering the cell at 4× and box-filtering.
+
+### M3 — Blend modes and transparency groups (~1 week) — *done, minus `/SMask`*
 *Why*: logos, shadows, overlapping highlights and any `/Group /Transparency` form.
 Today only `/ca` alpha exists, so composited artwork looks flat or too dark.
 *Where*: `GState` (~line 582) gains `/BM`, `/ca`, `/CA`, `/AIS`, `/SMask`;

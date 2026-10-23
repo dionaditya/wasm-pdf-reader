@@ -470,4 +470,56 @@ await check('R6: a corrupt /Perms rejects the owner password, not the user one',
   );
 });
 
+// ─── tiling patterns and transparency groups ────────────────────────────────
+// Both fixtures are hand-built by scripts/make_pattern_fixtures.py so the
+// geometry is known exactly: a 45-degree checker over 260x260 points, a hatch
+// under text, a Multiply group, a /ca 0.5 group and a transparent CMYK fill.
+const patBytes = await readFile(join(root, 'test', 'fixtures', 'patterns.pdf'));
+const patDoc = await PdfDocument.open(patBytes, { filename: 'patterns.pdf' });
+
+await check('tiling pattern: 45-degree checker fills the painted rectangle', async () => {
+  const out = await patDoc.render(0, { scale: 1.5 });
+  const ink = inkRatio(out.imageData);
+  assert.ok(ink > 0.38 && ink < 0.47, `ink ${ink.toFixed(3)} should be ~0.43`);
+});
+
+await check('tiling pattern: hatch fills under text and the text stays black', async () => {
+  const out = await patDoc.render(1, { scale: 1.5 });
+  const { data, width, height } = out.imageData;
+  // the heading sits near the top; count dark pixels in that band
+  let dark = 0;
+  for (let y = 90; y < 170; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (data[i] < 90 && data[i + 1] < 90 && data[i + 2] < 90) dark++;
+    }
+  }
+  assert.ok(dark > 100, `heading pixels ${dark}`);
+  const ink = inkRatio(out.imageData);
+  assert.ok(ink > 0.06 && ink < 0.15, `ink ${ink.toFixed(3)} should be ~0.10`);
+});
+patDoc.close();
+
+const trBytes = await readFile(join(root, 'test', 'fixtures', 'transparency.pdf'));
+const trDoc = await PdfDocument.open(trBytes, { filename: 'transparency.pdf' });
+
+function pixel(imageData, x, y) {
+  const i = (y * imageData.width + x) * 4;
+  return [imageData.data[i], imageData.data[i + 1], imageData.data[i + 2]];
+}
+
+await check('transparency: a Multiply group darkens the backdrop', async () => {
+  const out = await trDoc.render(0, { scale: 1.5 });
+  // x=300,y=300 lands inside the logo over the blue half: multiply, not replace
+  const [r, g, b] = pixel(out.imageData, 300, 300);
+  assert.ok(r < 60 && g < 80 && b > 80, `multiply pixel ${r},${g},${b}`);
+});
+
+await check('transparency: /ca 0.5 group blends halfway, not opaque', async () => {
+  const out = await trDoc.render(1, { scale: 1.5 });
+  const [r, g, b] = pixel(out.imageData, 120, 300);   // red over blue half
+  assert.ok(r > 100 && r < 200 && b > 60, `/ca pixel ${r},${g},${b}`);
+});
+trDoc.close();
+
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

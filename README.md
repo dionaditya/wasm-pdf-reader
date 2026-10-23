@@ -48,7 +48,10 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   file.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
   clipping, text, Form and Image XObjects, inline images, `/Rotate` pages,
-  axial and radial shadings, `/SMask` soft masks and `/Mask` stencil masks.
+  axial and radial shadings, tiling patterns (`/PatternType 1`, cached per
+  pattern and scale, clipped to the painted path), shading patterns, all 15 PDF
+  blend modes, `/Group /Transparency` compositing with `/ca` and `/CA`,
+  `/SMask` soft masks and `/Mask` stencil masks.
   Software rasterizer with 4× vertical supersampling, returning RGBA8.
   Images larger than the destination are box-averaged, so a 5000 px scan drawn
   at 600 px stays readable instead of aliasing.
@@ -87,8 +90,10 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 
 Not supported, and reported through `document.warnings` rather than silently
 approximated: text shaping for scripts that are not stored pre-shaped (Arabic,
-Indic), Type3 fonts, mesh shadings (4–7), transparency groups and blend modes,
-`/SMask` on form XObjects, vertical writing (`-V` CMaps paint horizontally),
+Indic), Type3 fonts, mesh shadings (4–7), soft masks attached with `gs /SMask`
+(a group's own `/ca` and `/BM` do work), non-isolated transparency groups
+(they are composited isolated, which only differs when the group relies on the
+page backdrop), vertical writing (`-V` CMaps paint horizontally),
 outlines/bookmarks, form fields
 and XFA, public-key encryption, and ranged/streamed loading (the whole file is
 resident in wasm memory). Annotations render but are not interactive beyond
@@ -172,9 +177,9 @@ with a global symbol dictionary, drawn at 1:1:
 ## Roadmap
 
 [`ROADMAP.md`](ROADMAP.md) carries the ordered gap list to MuPDF-grade output —
-ICC colour management, tiling patterns, blend modes and transparency groups, mesh
-shadings, Separation/DeviceN, the JPEG 2000 decoder, Type3/Type1 fonts, OCG and
-forms — each with its fixture, acceptance numbers, touchpoints and the non-goals
+ICC colour management (parser landed, not yet wired into every colour path),
+mesh shadings, Separation/DeviceN, the JPEG 2000 decoder, Type3/Type1 fonts,
+OCG and forms — each with its fixture, acceptance numbers, touchpoints and the non-goals
 (shaping, writing, OCR, other formats) that are deliberately out of scope.
 
 ## Install

@@ -66,6 +66,7 @@ em++ \
   -I "$JBIG2_DIR" \
   src/cpp/pdfannots.cpp \
   src/cpp/pdfraster.cpp \
+  src/cpp/iccp.cpp \
   src/cpp/wpdf_api.cpp \
   src/cpp/cfffont.cpp \
   src/cpp/cff-parser.cc \

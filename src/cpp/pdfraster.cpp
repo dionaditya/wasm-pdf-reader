@@ -10,7 +10,8 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 #include "pdf_glyphs.h"
-#include "fonts_data.h"   // metric-compatible document faces (Liberation/Carlito/Caladea)
+#include "fonts_data.h"
+#include "iccp.hpp"   // metric-compatible document faces (Liberation/Carlito/Caladea)
 
 namespace pdf {
 namespace {
@@ -22,25 +23,163 @@ typedef std::vector<Poly> Polys;
 
 static inline float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 
+// ─── blend modes (PDF 32000-1 §11.3.5) ─────────────────────────────────────
+enum BlendMode {
+    BM_NORMAL = 0, BM_MULTIPLY, BM_SCREEN, BM_OVERLAY, BM_DARKEN, BM_LIGHTEN,
+    BM_COLOR_DODGE, BM_COLOR_BURN, BM_HARD_LIGHT, BM_SOFT_LIGHT, BM_DIFFERENCE,
+    BM_EXCLUSION, BM_HUE, BM_SATURATION, BM_COLOR, BM_LUMINOSITY
+};
+
+static inline int blendModeFromName(const std::string& n) {
+    if (n == "Multiply") return BM_MULTIPLY;
+    if (n == "Screen") return BM_SCREEN;
+    if (n == "Overlay") return BM_OVERLAY;
+    if (n == "Darken") return BM_DARKEN;
+    if (n == "Lighten") return BM_LIGHTEN;
+    if (n == "ColorDodge") return BM_COLOR_DODGE;
+    if (n == "ColorBurn") return BM_COLOR_BURN;
+    if (n == "HardLight") return BM_HARD_LIGHT;
+    if (n == "SoftLight") return BM_SOFT_LIGHT;
+    if (n == "Difference") return BM_DIFFERENCE;
+    if (n == "Exclusion") return BM_EXCLUSION;
+    if (n == "Hue") return BM_HUE;
+    if (n == "Saturation") return BM_SATURATION;
+    if (n == "Color") return BM_COLOR;
+    if (n == "Luminosity") return BM_LUMINOSITY;
+    return BM_NORMAL;   // Normal, Compatible, and anything unknown
+}
+
+static inline float bmClamp(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+
+static void rgbToHsl(float r, float g, float b, float& h, float& s, float& l) {
+    float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
+    l = (mx + mn) * 0.5f;
+    float d = mx - mn;
+    if (d < 1e-6f) { h = 0.f; s = 0.f; return; }
+    s = l > 0.5f ? d / (2.f - mx - mn) : d / (mx + mn);
+    if (mx == r) h = (g - b) / d + (g < b ? 6.f : 0.f);
+    else if (mx == g) h = (b - r) / d + 2.f;
+    else h = (r - g) / d + 4.f;
+    h *= 1.f / 6.f;
+}
+
+static float hslHue(float m1, float m2, float h) {
+    if (h < 0.f) h += 1.f;
+    if (h > 1.f) h -= 1.f;
+    if (h * 6.f < 1.f) return m1 + (m2 - m1) * h * 6.f;
+    if (h * 2.f < 1.f) return m2;
+    if (h * 3.f < 2.f) return m1 + (m2 - m1) * (2.f / 3.f - h) * 6.f;
+    return m1;
+}
+
+static void hslToRgb(float h, float s, float l, float& r, float& g, float& b) {
+    if (s < 1e-6f) { r = g = b = l; return; }
+    float m2 = l <= 0.5f ? l * (1.f + s) : l + s - l * s;
+    float m1 = 2.f * l - m2;
+    r = hslHue(m1, m2, h + 1.f / 3.f);
+    g = hslHue(m1, m2, h);
+    b = hslHue(m1, m2, h - 1.f / 3.f);
+}
+
+// Blend function B(backdrop, source); rgb values 0..1, result in source.
+static inline void blendRGB(int mode, float br, float bg, float bb,
+                            float& sr, float& sg, float& sb) {
+    switch (mode) {
+        case BM_MULTIPLY:  sr = br * sr; sg = bg * sg; sb = bb * sb; break;
+        case BM_SCREEN:    sr = br + sr - br * sr; sg = bg + sg - bg * sg; sb = bb + sb - bb * sb; break;
+        case BM_OVERLAY:   // hard light with operands swapped
+            sr = br <= 0.5f ? 2.f * sr * br : 1.f - 2.f * (1.f - sr) * (1.f - br);
+            sg = bg <= 0.5f ? 2.f * sg * bg : 1.f - 2.f * (1.f - sg) * (1.f - bg);
+            sb = bb <= 0.5f ? 2.f * sb * bb : 1.f - 2.f * (1.f - sb) * (1.f - bb);
+            break;
+        case BM_DARKEN:    sr = std::min(sr, br); sg = std::min(sg, bg); sb = std::min(sb, bb); break;
+        case BM_LIGHTEN:   sr = std::max(sr, br); sg = std::max(sg, bg); sb = std::max(sb, bb); break;
+        case BM_COLOR_DODGE:
+            sr = br <= 0.f ? 0.f : (sr >= 1.f ? 1.f : std::min(1.f, br / (1.f - sr)));
+            sg = bg <= 0.f ? 0.f : (sg >= 1.f ? 1.f : std::min(1.f, bg / (1.f - sg)));
+            sb = bb <= 0.f ? 0.f : (sb >= 1.f ? 1.f : std::min(1.f, bb / (1.f - sb)));
+            break;
+        case BM_COLOR_BURN:
+            sr = br >= 1.f ? 1.f : (sr <= 0.f ? 0.f : 1.f - std::min(1.f, (1.f - br) / sr));
+            sg = bg >= 1.f ? 1.f : (sg <= 0.f ? 0.f : 1.f - std::min(1.f, (1.f - bg) / sg));
+            sb = bb >= 1.f ? 1.f : (sb <= 0.f ? 0.f : 1.f - std::min(1.f, (1.f - bb) / sb));
+            break;
+        case BM_HARD_LIGHT:
+            sr = sr <= 0.5f ? 2.f * sr * br : 1.f - 2.f * (1.f - sr) * (1.f - br);
+            sg = sg <= 0.5f ? 2.f * sg * bg : 1.f - 2.f * (1.f - sg) * (1.f - bg);
+            sb = sb <= 0.5f ? 2.f * sb * bb : 1.f - 2.f * (1.f - sb) * (1.f - bb);
+            break;
+        case BM_SOFT_LIGHT: {
+            auto sl = [](float b, float s) {
+                if (s <= 0.5f) return b - (1.f - 2.f * s) * b * (1.f - b);
+                float d = b <= 0.25f ? ((16.f * b - 12.f) * b + 4.f) * b : std::sqrt(b);
+                return b + (2.f * s - 1.f) * (d - b);
+            };
+            sr = sl(br, sr); sg = sl(bg, sg); sb = sl(bb, sb);
+            break;
+        }
+        case BM_DIFFERENCE: sr = fabs(sr - br); sg = fabs(sg - bg); sb = fabs(sb - bb); break;
+        case BM_EXCLUSION:  sr = sr + br - 2.f * sr * br; sg = sg + bg - 2.f * sg * bg; sb = sb + bb - 2.f * sb * bb; break;
+        case BM_HUE: case BM_SATURATION: case BM_COLOR: case BM_LUMINOSITY: {
+            float bh, bs, bl, sh, ss, sl;
+            rgbToHsl(br, bg, bb, bh, bs, bl);
+            rgbToHsl(sr, sg, sb, sh, ss, sl);
+            float h = bh, s = bs, l = bl;
+            switch (mode) {
+                case BM_HUE:        h = sh; s = ss; l = bl; break;
+                case BM_SATURATION: h = bh; s = ss; l = bl; break;
+                case BM_COLOR:      h = sh; s = ss; l = bl; break;
+                case BM_LUMINOSITY: h = bh; s = bs; l = sl; break;
+            }
+            hslToRgb(h, s, l, sr, sg, sb);
+            break;
+        }
+        default: break;   // Normal
+    }
+    sr = bmClamp(sr); sg = bmClamp(sg); sb = bmClamp(sb);
+}
+
 // ─── canvas ─────────────────────────────────────────────────────────────────
 typedef std::shared_ptr<std::vector<uint8_t>> ClipMask;
 
 struct Canvas {
     int w = 0, h = 0;
+    bool transparent = false;     // scratch/group buffers keep real alpha
     std::vector<uint8_t> px;      // RGBA, straight alpha, background opaque white
 
     void init(int width, int height) {
         w = width; h = height;
+        transparent = false;
         px.assign((size_t)w * h * 4, 255);
     }
-    inline void blend(int x, int y, float r, float g, float b, float a) {
+    void initTransparent(int width, int height) {
+        w = width; h = height;
+        transparent = true;
+        px.assign((size_t)w * h * 4, 0);
+    }
+    inline void blend(int x, int y, float r, float g, float b, float a, int bm = 0) {
         if (a <= 0.f) return;
         if (a > 1.f) a = 1.f;
         uint8_t* p = &px[((size_t)y * w + x) * 4];
-        p[0] = (uint8_t)(p[0] * (1.f - a) + r * 255.f * a + 0.5f);
-        p[1] = (uint8_t)(p[1] * (1.f - a) + g * 255.f * a + 0.5f);
-        p[2] = (uint8_t)(p[2] * (1.f - a) + b * 255.f * a + 0.5f);
-        p[3] = 255;
+        if (!transparent) {
+            float dr = p[0] * (1.f / 255.f), dg = p[1] * (1.f / 255.f), db = p[2] * (1.f / 255.f);
+            if (bm) { float br = r, bg2 = g, bb = b; blendRGB(bm, dr, dg, db, br, bg2, bb); r = br; g = bg2; b = bb; }
+            p[0] = (uint8_t)((dr * (1.f - a) + r * a) * 255.f + 0.5f);
+            p[1] = (uint8_t)((dg * (1.f - a) + g * a) * 255.f + 0.5f);
+            p[2] = (uint8_t)((db * (1.f - a) + b * a) * 255.f + 0.5f);
+            p[3] = 255;
+            return;
+        }
+        // straight alpha source-over on a transparent buffer
+        float da = p[3] * (1.f / 255.f);
+        float oa = a + da * (1.f - a);
+        if (oa <= 0.f) { p[0] = p[1] = p[2] = p[3] = 0; return; }
+        float dr = p[0] * (1.f / 255.f), dg = p[1] * (1.f / 255.f), db = p[2] * (1.f / 255.f);
+        if (bm) { float br = r, bg2 = g, bb = b; blendRGB(bm, dr, dg, db, br, bg2, bb); r = br; g = bg2; b = bb; }
+        p[0] = (uint8_t)(((r * a + dr * da * (1.f - a)) / oa) * 255.f + 0.5f);
+        p[1] = (uint8_t)(((g * a + dg * da * (1.f - a)) / oa) * 255.f + 0.5f);
+        p[2] = (uint8_t)(((b * a + db * da * (1.f - a)) / oa) * 255.f + 0.5f);
+        p[3] = (uint8_t)(oa * 255.f + 0.5f);
     }
 };
 
@@ -65,7 +204,7 @@ static void addSpanCov(float* cov, int base, float xa, float xb, int n) {
 
 static void FillPolys(Canvas& cv, const Polys& polys, bool evenOdd,
                       float r, float g, float b, float alpha,
-                      const std::vector<uint8_t>* clip = nullptr) {
+                      const std::vector<uint8_t>* clip = nullptr, int bm = 0) {
     if (alpha <= 0.f) return;
     // collect edges inline (duplicated from ScanPolys for speed/clarity)
     std::vector<Edge> edges;
@@ -122,7 +261,7 @@ static void FillPolys(Canvas& cv, const Polys& polys, bool evenOdd,
             if (c <= 0.002f) continue;
             float al = c * alpha;
             if (clip) al *= (*clip)[(size_t)y * cv.w + x0 + i] * (1.f / 255.f);
-            if (al > 0.f) cv.blend(x0 + i, y, r, g, b, al);
+            if (al > 0.f) cv.blend(x0 + i, y, r, g, b, al, bm);
         }
     }
 }
@@ -588,7 +727,12 @@ struct GState {
     float fill[3] = {0, 0, 0};
     float stroke[3] = {0, 0, 0};
     float fillA = 1.f, strokeA = 1.f;
+    int   bm = BM_NORMAL;          // /BM blend mode
+    ObjP  fillPat, strokePat;      // active tiling/shading pattern (null = solid)
     ClipMask clip;
+    // soft mask: per-pixel 0..255 luminance applied to every paint
+    ClipMask smask;
+    double smaskOffsetX = 0, smaskOffsetY = 0;   // device-space origin of the mask
 };
 
 // Uniform scale of a CTM: line widths and dash lengths are user-space values
@@ -699,6 +843,9 @@ struct Interp {
     std::vector<GState> gstack;
     std::vector<TextItem>* textSink = nullptr;
     Mat devToPage;      // device pixels -> page points (y up)
+    ObjP curRes;        // resources of the stream currently executing
+    struct TileEntry { ObjP pat; double scale; Canvas cv; };
+    std::vector<TileEntry> tiles;   // rendered tiling-pattern cells
 
     void exec(const std::string& data, ObjP resources, GState gs);
     void doXObject(ObjP ref, ObjP resources, GState& gs, const std::string& name);
@@ -708,6 +855,9 @@ struct Interp {
                   const Font* font, const std::string& embedded);
     void paintPath(PathBuilder& pb, bool strokeIt, bool fillIt, bool evenOdd, GState& gs);
     void paintShading(ObjP shadingName, ObjP resources, GState& gs);
+    void paintShadingObj(ObjP sh, GState& gs);
+    void paintPattern(const Polys& polys, bool evenOdd, ObjP pat, GState& gs, float alpha);
+    void paintTilingPattern(const Polys& polys, bool evenOdd, ObjP pat, GState& gs, float alpha);
 };
 
 static void toDeviceRect(const Mat& m, double& x0, double& y0, double& x1, double& y1,
@@ -723,9 +873,13 @@ void Interp::paintPath(PathBuilder& pb, bool strokeIt, bool fillIt, bool evenOdd
     if (polys.empty()) return;
     st->paths++;
     if (fillIt) {
-        FillPolys(*cv, polys, evenOdd, gs.fill[0], gs.fill[1], gs.fill[2], gs.fillA,
-                  gs.clip ? gs.clip.get() : nullptr);
-        st->fills++;
+        if (gs.fillPat) {
+            paintPattern(polys, evenOdd, gs.fillPat, gs, gs.fillA);
+        } else {
+            FillPolys(*cv, polys, evenOdd, gs.fill[0], gs.fill[1], gs.fill[2], gs.fillA,
+                      gs.clip ? gs.clip.get() : nullptr, gs.bm);
+            st->fills++;
+        }
     }
     if (strokeIt) {
         Polys outline;
@@ -735,9 +889,15 @@ void Interp::paintPath(PathBuilder& pb, bool strokeIt, bool fillIt, bool evenOdd
         for (double& d : dash) d *= sc;
         ApplyDash(polys, dash, gs.dashPhase * sc, false, dashed);
         for (auto& dp : dashed) StrokePolys(outline, dp.first, (float)(gs.lw * sc), gs.cap, dp.second);
-        FillPolys(*cv, outline, false, gs.stroke[0], gs.stroke[1], gs.stroke[2], gs.strokeA,
-                  gs.clip ? gs.clip.get() : nullptr);
-        st->strokes++;
+        if (gs.strokePat) {
+            GState sgs = gs;
+            sgs.fillA = gs.strokeA;
+            paintPattern(outline, false, gs.strokePat, sgs, gs.strokeA);
+        } else {
+            FillPolys(*cv, outline, false, gs.stroke[0], gs.stroke[1], gs.stroke[2], gs.strokeA,
+                      gs.clip ? gs.clip.get() : nullptr, gs.bm);
+            st->strokes++;
+        }
     }
 }
 
@@ -1012,6 +1172,10 @@ void Interp::paintShading(ObjP shadingName, ObjP resources, GState& gs) {
     if (!shadings) return;
     ObjP sh = doc->resolve(shadings->get(shadingName->str.c_str()));
     if (!sh) { st->note("shading missing"); return; }
+    paintShadingObj(sh, gs);
+}
+
+void Interp::paintShadingObj(ObjP sh, GState& gs) {
     int type = (int)num(doc->resolve(sh->get("ShadingType")), 0);
     if (type != 2 && type != 3) { st->note("shading type " + std::to_string(type)); return; }
 
@@ -1088,7 +1252,175 @@ void Interp::paintShading(ObjP shadingName, ObjP resources, GState& gs) {
             } else {
                 r = (float)col[0]; g = (float)col[1]; b = (float)col[2];
             }
-            cv->blend(x, y, r, g, b, a);
+            cv->blend(x, y, r, g, b, a, gs.bm);
+        }
+    }
+    st->fills++;
+}
+
+void Interp::paintPattern(const Polys& polys, bool evenOdd, ObjP pat, GState& gs, float alpha) {
+    if (!pat || pat->t != O_DICT) return;
+    int ptype = (int)num(doc->resolve(pat->get("PatternType")), 0);
+    if (ptype == 2) {
+        // shading pattern: paint the shading clipped to the current path
+        ObjP sh = doc->resolve(pat->get("Shading"));
+        if (!sh) { st->note("shading pattern"); return; }
+        GState sub = gs;
+        sub.clip = ClipPolys(*cv, gs.clip, polys, evenOdd);
+        paintShadingObj(sh, sub);
+        return;
+    }
+    if (ptype != 1) { st->note("pattern type " + std::to_string(ptype)); return; }
+    paintTilingPattern(polys, evenOdd, pat, gs, alpha);
+}
+
+// A tiling pattern is a small content stream stamped on a lattice. The cell is
+// rendered once per (pattern, scale) into a transparent buffer, then every pixel
+// inside the painted path samples that buffer through the inverse of
+// /Matrix x CTM — so rotation and skew need no special case.
+void Interp::paintTilingPattern(const Polys& polys, bool evenOdd, ObjP pat, GState& gs, float alpha) {
+    ObjP bboxO = doc->resolve(pat->get("BBox"));
+    if (!bboxO || bboxO->t != O_ARR || bboxO->arr.size() < 4) { st->note("pattern bbox"); return; }
+    double bx0 = num(doc->resolve(bboxO->arr[0]), 0), by0 = num(doc->resolve(bboxO->arr[1]), 0);
+    double bx1 = num(doc->resolve(bboxO->arr[2]), 0), by1 = num(doc->resolve(bboxO->arr[3]), 0);
+    if (bx1 < bx0) std::swap(bx0, bx1);
+    if (by1 < by0) std::swap(by0, by1);
+    if (bx1 - bx0 < 0.01 || by1 - by0 < 0.01) { st->note("pattern bbox empty"); return; }
+
+    double xs = num(doc->resolve(pat->get("XStep")), bx1 - bx0);
+    double ys = num(doc->resolve(pat->get("YStep")), by1 - by0);
+    if (xs <= 0.01 || ys <= 0.01) { st->note("pattern step"); return; }
+
+    Mat pm;   // /Matrix: pattern space -> default user space
+    ObjP mx = doc->resolve(pat->get("Matrix"));
+    if (mx && mx->t == O_ARR && mx->arr.size() == 6) {
+        pm = Mat(num(doc->resolve(mx->arr[0]), 1), num(doc->resolve(mx->arr[1]), 0),
+                 num(doc->resolve(mx->arr[2]), 0), num(doc->resolve(mx->arr[3]), 1),
+                 num(doc->resolve(mx->arr[4]), 0), num(doc->resolve(mx->arr[5]), 0));
+    }
+    Mat dev = pm.mul(gs.ctm);            // pattern space -> device pixels
+    double scale = ctmScale(dev);
+    if (!(scale > 1e-4)) return;
+
+    // Device-space bounds of one cell. The pattern matrix carries the page flip
+    // and offset, so the cell does not start at the tile's origin: compute where
+    // the four corners land and shift the tile matrix by that minimum, otherwise
+    // the cell is painted outside its own buffer (blank tiles).
+    double cw = bx1 - bx0, ch = by1 - by0;
+    double minX = 1e30, minY = 1e30, maxX = -1e30, maxY = -1e30;
+    const double corners[4][2] = {{0, 0}, {cw, 0}, {cw, ch}, {0, ch}};
+    for (auto& c : corners) {
+        double dx, dy;
+        dev.apply(c[0], c[1], dx, dy);
+        minX = std::min(minX, dx); maxX = std::max(maxX, dx);
+        minY = std::min(minY, dy); maxY = std::max(maxY, dy);
+    }
+    // Mat::mul(X) applies "this" first: cell-local -> device -> tile pixel.
+    // The cell is rendered at kTileSS x device resolution: a rotated checker
+    // sampled at 1:1 has staircased edges and a mean diff an order of magnitude
+    // above the gate, while the supersampled cell matches the reference.
+    const int kTileSS = 3;
+    Mat toTile = Mat(1, 0, 0, 1, -bx0, -by0).mul(dev)
+                    .mul(Mat(1, 0, 0, 1, -minX, -minY))
+                    .mul(Mat(kTileSS, 0, 0, kTileSS, 0, 0));
+
+    // exactly one cell: a spare pixel column would be empty and show up as a
+    // seam at every tile boundary
+    int tw = (int)std::ceil((maxX - minX) * kTileSS);
+    int th = (int)std::ceil((maxY - minY) * kTileSS);
+    if (tw < 1) tw = 1;
+    if (th < 1) th = 1;
+    if (tw > 2048) tw = 2048;            // clamp like a page: a hostile /BBox must not allocate GBs
+    if (th > 2048) th = 2048;
+
+    Canvas* tile = nullptr;
+    for (auto& e : tiles)
+        if (e.pat.get() == pat.get() && fabs(e.scale - scale) < 1e-3) { tile = &e.cv; break; }
+    if (!tile) {
+        if (tiles.size() > 24) tiles.clear();      // keep the footprint bounded
+        std::string data;
+        if (!doc->decodeStream(pat, data)) { st->note("pattern stream"); return; }
+        ObjP pres = doc->resolve(pat->get("Resources"));
+        if (!pres) pres = curRes;
+
+        TileEntry e;
+        e.pat = pat;
+        e.scale = scale;
+        e.cv.initTransparent(tw, th);
+        tiles.push_back(std::move(e));
+        tile = &tiles.back().cv;
+
+        // paint the cell into the tile buffer with the same alignment the
+        // sampling loop below assumes
+        GState sub;
+        sub.ctm = toTile;
+        Canvas* savedCv = cv;
+        ObjP savedRes = curRes;
+        cv = tile;
+        curRes = pres;
+        exec(data, pres, sub);
+        cv = savedCv;
+        curRes = savedRes;
+    }
+
+    // path coverage + clip, sampled once and reused for every tile pixel
+    ClipMask mask = ClipPolys(*cv, gs.clip, polys, evenOdd);
+    if (!mask) return;
+
+    double det = dev.a * dev.d - dev.b * dev.c;
+    if (fabs(det) < 1e-12) return;
+    double inv = 1.0 / det;
+    // inverse of dev, for device pixel -> pattern space
+    double ia = dev.d * inv, ib = -dev.b * inv, ic = -dev.c * inv, id = dev.a * inv;
+    double ie = (dev.c * dev.f - dev.d * dev.e) * inv;
+    double iff = (dev.b * dev.e - dev.a * dev.f) * inv;
+
+    // 2x2 supersampling per pixel: a rotated cell lands on fractional tile
+    // coordinates, and picking one texel turns every diagonal edge into a
+    // staircase that the reference renderer does not have.
+    auto sampleAt = [&](double sx, double sy, float* out) {
+        double px = ia * sx + ic * sy + ie;
+        double py = ib * sx + id * sy + iff;
+        double cx = px - xs * std::floor((px - bx0) / xs);
+        double cy = py - ys * std::floor((py - by0) / ys);
+        double tx, ty;
+        toTile.apply(cx, cy, tx, ty);
+        int ix = (int)std::floor(tx), iy = (int)std::floor(ty);
+        if (ix < 0) ix = 0;
+        if (iy < 0) iy = 0;
+        if (ix >= tile->w) ix = tile->w - 1;
+        if (iy >= tile->h) iy = tile->h - 1;
+        const uint8_t* s = &tile->px[((size_t)iy * tile->w + ix) * 4];
+        // premultiplied: transparent texels carry no colour, and averaging raw
+        // colour would drag every edge towards black
+        float a = s[3] * (1.f / 255.f);
+        out[0] = s[0] * (1.f / 255.f) * a;
+        out[1] = s[1] * (1.f / 255.f) * a;
+        out[2] = s[2] * (1.f / 255.f) * a;
+        out[3] = a;
+    };
+
+    double offs[9][2];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            offs[i * 3 + j][0] = (j + 0.5) / 3.0;
+            offs[i * 3 + j][1] = (i + 0.5) / 3.0;
+        }
+    for (int y = 0; y < cv->h; y++) {
+        for (int x = 0; x < cv->w; x++) {
+            float cov = (*mask)[(size_t)y * cv->w + x] * (1.f / 255.f);
+            if (cov <= 0.002f) continue;
+            float acc[4] = {0, 0, 0, 0};
+            for (auto& o : offs) {
+                float sm[4];
+                sampleAt(x + o[0], y + o[1], sm);
+                for (int k = 0; k < 4; k++) acc[k] += sm[k] * (1.f / 9.f);
+            }
+            if (acc[3] <= 1e-4f) continue;
+            float cr = acc[0] / acc[3], cg = acc[1] / acc[3], cb2 = acc[2] / acc[3];
+            float sa = acc[3] * cov * alpha * gs.fillA;
+            if (sa <= 0.0005f) continue;
+            cv->blend(x, y, cr, cg, cb2, sa, gs.bm);
         }
     }
     st->fills++;
@@ -1142,6 +1474,40 @@ void Interp::doXObject(ObjP ref, ObjP resources, GState& gs, const std::string& 
     }
 
     depth++;
+    // A form with /Group /Transparency is a group: it is composited as a whole,
+    // not painted straight into the page. Rendering it into its own buffer is
+    // what makes Multiply/Screen logos and /ca groups behave like the producer
+    // drew them (otherwise the blend applies per object and the result is far
+    // too dark).
+    ObjP group = doc->resolve(xo->get("Group"));
+    std::string gsub = group ? objName(doc->resolve(group->get("S"))) : std::string();
+    bool isolatedGroup = (gsub == "Transparency");
+    if (isolatedGroup && depth <= 6) {
+        Canvas off;
+        off.initTransparent(cv->w, cv->h);
+        // Inside an isolated group the backdrop is transparent, so the group's
+        // own /BM and /ca must not leak into its contents: a Multiply set for
+        // the group would otherwise multiply every object against black.
+        sub.bm = BM_NORMAL;
+        sub.fillA = 1.f;
+        sub.strokeA = 1.f;
+        Canvas* savedCv = cv;
+        cv = &off;
+        exec(data, res, sub);
+        cv = savedCv;
+        float ga = gs.fillA;
+        for (int y = 0; y < cv->h; y++) {
+            for (int x = 0; x < cv->w; x++) {
+                const uint8_t* s = &off.px[((size_t)y * off.w + x) * 4];
+                if (s[3] == 0) continue;
+                cv->blend(x, y, s[0] * (1.f / 255.f), s[1] * (1.f / 255.f),
+                          s[2] * (1.f / 255.f), s[3] * (1.f / 255.f) * ga, gs.bm);
+            }
+        }
+        depth--;
+        (void)name;
+        return;
+    }
     exec(data, res, sub);
     depth--;
     (void)name;
@@ -1172,6 +1538,18 @@ void Interp::drawImage(ObjP io, GState& gs) {
             else if (fam == "Indexed") ncomp = 1;
         }
     }
+    // An /ICCBased image carries the producer's real profile; run it instead of
+    // the naive component guess so CMYK and wide-gamut images match the source.
+    IccModel icc;
+    bool haveIcc = false;
+    if (csObj && csObj->t == O_ARR && csObj->arr.size() > 1 &&
+        objName(doc->resolve(csObj->arr[0])) == "ICCBased") {
+        ObjP stm = doc->resolve(csObj->arr[1]);
+        std::string prof;
+        if (stm && doc->decodeStream(stm, prof)) haveIcc = iccParse(prof, icc);
+        if (haveIcc && icc.n > 0) ncomp = icc.n;
+    }
+
     std::string raw;
     if (doc->hasFilter(io, "JBIG2Decode")) {
         // Bi-level scans: PDFium's decoder, compiled into this module.
@@ -1321,7 +1699,13 @@ void Interp::drawImage(ObjP io, GState& gs) {
                 return sum / (float)(nx * ny);
             };
             float r, g, b;
-            if (ncomp == 1) { r = g = b = avg(sx, sy, 0); }
+            if (haveIcc) {
+                float in[4] = {0, 0, 0, 0};
+                for (int c = 0; c < ncomp && c < 4; c++) in[c] = avg(sx, sy, c);
+                float rgb[3];
+                iccToRgb(icc, in, rgb);
+                r = rgb[0]; g = rgb[1]; b = rgb[2];
+            } else if (ncomp == 1) { r = g = b = avg(sx, sy, 0); }
             else if (ncomp == 4) {
                 float c = avg(sx, sy, 0), m = avg(sx, sy, 1), yy = avg(sx, sy, 2), k = avg(sx, sy, 3);
                 r = (1 - c) * (1 - k); g = (1 - m) * (1 - k); b = (1 - yy) * (1 - k);
@@ -1338,7 +1722,7 @@ void Interp::drawImage(ObjP io, GState& gs) {
                 a *= (maskIsStencil ? (mv ? 1.f : 0.f) : mv * (1.f / 255.f));
             }
             if (gs.clip) a *= (*gs.clip)[(size_t)y * cv->w + x] * (1.f / 255.f);
-            if (a > 0) cv->blend(x, y, r, g, b, a);
+            if (a > 0) cv->blend(x, y, r, g, b, a, gs.bm);
         }
     }
 }
@@ -1349,12 +1733,15 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
     PathBuilder pb(gs.ctm);
     bool pathHasSegs = false;
 
-    ObjP fonts = nullptr, xobjs = nullptr, extg = nullptr, colorspaces = nullptr;
+    ObjP savedRes = curRes;
+    curRes = resources;
+    ObjP fonts = nullptr, xobjs = nullptr, extg = nullptr, colorspaces = nullptr, patterns = nullptr;
     if (resources) {
         fonts = doc->resolve(resources->get("Font"));
         xobjs = doc->resolve(resources->get("XObject"));
         extg = doc->resolve(resources->get("ExtGState"));
         colorspaces = doc->resolve(resources->get("ColorSpace"));
+        patterns = doc->resolve(resources->get("Pattern"));
     }
 
     // text state
@@ -1434,6 +1821,8 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
                     if (v) gs.fillA = (float)num(v, 1);
                     v = doc->resolve(g->get("CA"));
                     if (v) gs.strokeA = (float)num(v, 1);
+                    v = doc->resolve(g->get("BM"));
+                    if (v && v->t == O_NAME) gs.bm = blendModeFromName(v->str);
                     v = doc->resolve(g->get("LW"));
                     if (v) gs.lw = num(v, gs.lw);
                     v = doc->resolve(g->get("LC"));
@@ -1597,27 +1986,40 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
         } else if (op == "G") {
             float v = (float)numArg(1, 0);
             gs.stroke[0] = gs.stroke[1] = gs.stroke[2] = v;
+            gs.strokePat = nullptr;
         } else if (op == "g") {
             float v = (float)numArg(1, 0);
             gs.fill[0] = gs.fill[1] = gs.fill[2] = v;
+            gs.fillPat = nullptr;
         } else if (op == "RG") {
             gs.stroke[0] = (float)numArg(3, 0);
             gs.stroke[1] = (float)numArg(2, 0);
             gs.stroke[2] = (float)numArg(1, 0);
+            gs.strokePat = nullptr;
         } else if (op == "rg") {
             gs.fill[0] = (float)numArg(3, 0);
             gs.fill[1] = (float)numArg(2, 0);
             gs.fill[2] = (float)numArg(1, 0);
+            gs.fillPat = nullptr;
         } else if (op == "K") {
             cmykToRgb(numArg(4, 0), numArg(3, 0), numArg(2, 0), numArg(1, 0), gs.stroke);
+            gs.strokePat = nullptr;
         } else if (op == "k") {
             cmykToRgb(numArg(4, 0), numArg(3, 0), numArg(2, 0), numArg(1, 0), gs.fill);
+            gs.fillPat = nullptr;
         } else if (op == "SC" || op == "SCN" || op == "sc" || op == "scn") {
-            // colour by component count (patterns are skipped)
+            bool strokeOp = (op == "SC" || op == "SCN");
             if (!stack.empty() && stack.back()->t == O_NAME) {
-                st->note("pattern colour");
+                // pattern colour: "scn /P1" selects a tiling or shading pattern
+                ObjP pat = nullptr;
+                if (patterns) pat = doc->resolve(patterns->get(stack.back()->str.c_str()));
+                if (pat && pat->t == O_DICT) {
+                    if (strokeOp) gs.strokePat = pat; else gs.fillPat = pat;
+                } else {
+                    st->note("pattern colour");
+                }
             } else {
-                float* dst = (op == "SC" || op == "SCN") ? gs.stroke : gs.fill;
+                float* dst = strokeOp ? gs.stroke : gs.fill;
                 if (stack.size() == 1) {
                     float v = (float)numArg(1, 0);
                     dst[0] = dst[1] = dst[2] = v;
@@ -1626,6 +2028,7 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
                 } else if (stack.size() >= 4) {
                     cmykToRgb(numArg(4, 0), numArg(3, 0), numArg(2, 0), numArg(1, 0), dst);
                 }
+                if (strokeOp) gs.strokePat = nullptr; else gs.fillPat = nullptr;
             }
         } else {
             // unknown operator: ignore quietly (d0/d1/BX/EX/MP/DP...)
@@ -1635,6 +2038,7 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
     (void)pathHasSegs;
     (void)colorspaces;
     (void)lastPathName;
+    curRes = savedRes;
 }
 
 // ─── annotation fallbacks ───────────────────────────────────────────────────
