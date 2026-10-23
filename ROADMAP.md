@@ -22,8 +22,9 @@ fixture that fails today.
 | Blend modes, transparency groups | done | `transparency.pdf`: Multiply 0.42, `/ca 0.5` group 0.54 |
 | Mesh shadings | in progress | types 4/5 decode and Gouraud-fill; not yet within the gate, 6/7 warn |
 | ICC colour management | partial | `iccp.cpp` parses matrix/TRC and A2B0 LUTs; wired into images only, fills still `cmykToRgb` |
-| Separation/DeviceN | **missing** | `cmykToRgb` only, ICC read for `N` |
-| Type3, Type1 PFB, CID-CFF in OpenType wrapper | **missing** | substitute face |
+| Separation/DeviceN | done | `spot.pdf`: spot and two-ink fills render their alternate space |
+| Type3, CID-CFF in OpenType | done | `type3.pdf` matches MuPDF exactly; OTTO table extraction added |
+| Type1 PFB | **missing** | substitute face |
 | Widgets/forms/OCG | **missing** | no `AcroForm`, no `OCProperties` |
 
 Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
@@ -132,7 +133,7 @@ type 1 function shading.
 *Accept*: ≤ 3/255 mean abs diff per page; banding-free on a smooth gradient.
 *Risk*: type 7 is the long tail — ship 1/4/5/6 first, warn on 7.
 
-### M5 — Separation / DeviceN and tint transforms (2 days)
+### M5 — Separation / DeviceN and tint transforms (2 days) — *done*
 *Why*: spot colours (brand inks, meterai-style stamps) currently collapse into a
 component guess, so they render black or wrong.
 *Where*: `pdfraster.cpp`, the colour-space resolution used by `sc`/`scn`,
@@ -161,7 +162,7 @@ JP2 and one raw `.j2c` codestream.
 *Accept*: ≤ 4/255 mean abs diff against MuPDF on all three; no garbage page.
 *Risk*: size — a full openjpeg port costs ~1 MB wasm. Check the budget first.
 
-### M7 — Type3, Type1 PFB, CID-CFF in OpenType (~1 week)
+### M7 — Type3, Type1 PFB, CID-CFF in OpenType (~1 week) — *Type3 and OTTO done, PFB open*
 *Why*: old TeX/plot output (Type3), legacy Type1 (PFB), and CJK OTFs whose CFF
 sits inside an `OTTO` wrapper currently come out as substitute faces — plausible
 but wrong glyphs.

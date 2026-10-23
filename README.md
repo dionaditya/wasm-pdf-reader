@@ -61,7 +61,12 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   into `pdf-reader.wasm`, so scans decode in the same pass as everything else —
   no second binary, no JS hand-off, no re-render. Stencil `/Mask` streams decode
   through the same path.
-- **Fonts** — TrueType (`/FontFile2`), bare CFF and CID-keyed CFF
+- **Colour** — DeviceGray/RGB/CMYK, ICCBased profiles (matrix/TRC and A2B0
+  LUTs), `/Separation` and `/DeviceN` spot inks through their tint transform
+  (sampled, exponential or stitched function), `/Indexed`.
+- **Fonts** — TrueType (`/FontFile2`), bare CFF and CID-keyed CFF, CFF inside
+  an OpenType (`OTTO`) wrapper, and Type3 fonts whose glyphs are content
+  streams
   (`/FontFile3 /Type1C`, `/CIDFontType0C`) through an own Type2 interpreter, and
   sfnt-wrapped `/OpenType`. CID fonts resolve glyphs through `/CIDToGIDMap` or
   the CFF charset, after the character code is turned into a CID by the font's

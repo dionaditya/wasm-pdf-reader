@@ -729,6 +729,7 @@ struct GState {
     float fillA = 1.f, strokeA = 1.f;
     int   bm = BM_NORMAL;          // /BM blend mode
     ObjP  fillPat, strokePat;      // active tiling/shading pattern (null = solid)
+    ObjP  fillCS, strokeCS;        // active /ColorSpace (Separation, DeviceN, ICCBased)
     ClipMask clip;
     // soft mask: per-pixel 0..255 luminance applied to every paint
     ClipMask smask;
@@ -993,6 +994,34 @@ void Interp::showText(const std::string& bytes, GState& gs, Mat& tmBase,
         Mat trm = Mat(fs * th, 0, 0, fs, 0, rise).mul(tmBase).mul(gs.ctm);
         Mat toPage = trm.mul(devToPage);
 
+        // Type3: the glyph *is* a content stream. Run it with the font matrix
+        // folded into the text rendering matrix, then advance by /Widths.
+        if (font->type3 && font->charProcs) {
+            std::string gname;
+            auto dit = font->diff.find(code);
+            if (dit != font->diff.end()) gname = dit->second;
+            ObjP proc = gname.empty() ? nullptr : doc->resolve(font->charProcs->get(gname.c_str()));
+            if (proc && proc->isStream && depth < 8) {
+                std::string t3data;
+                if (doc->decodeStream(proc, t3data)) {
+                    GState t3 = gs;
+                    t3.ctm = Mat(font->fm[0], font->fm[1], font->fm[2],
+                                 font->fm[3], font->fm[4], font->fm[5]).mul(trm);
+                    t3.clip = gs.clip;
+                    ObjP res = font->res3 ? font->res3 : curRes;
+                    depth++;
+                    exec(t3data, res, t3);
+                    depth--;
+                }
+            }
+            double w3 = (font->widthKnown(cid) ? font->widthFor(cid) : adv1000) / 1000.0;
+            double adv3 = (w3 * fs + tc) * th;
+            if (step == 1 && code == 32) adv3 += tw * th;
+            tmBase = Mat(1, 0, 0, 1, adv3, 0).mul(tmBase);
+            i += step;
+            continue;
+        }
+
         float cbx0 = 0, cby0 = 0, cbx1 = 0, cby1 = 0;
         bool haveCffBox = false;
         if (gid && font->cff) {
@@ -1174,6 +1203,183 @@ void Interp::paintShading(ObjP shadingName, ObjP resources, GState& gs) {
     ObjP sh = doc->resolve(shadings->get(shadingName->str.c_str()));
     if (!sh) { st->note("shading missing"); return; }
     paintShadingObj(sh, gs);
+}
+
+// ─── colour spaces: Separation / DeviceN (M5) ─────────────────────────────
+// A spot colour is a name plus a tint transform into a device space. Getting
+// this wrong is visible: the fill collapses to black. The transform is a
+// function, so the function evaluator below handles the sampled (type 0),
+// exponential (type 2) and stitched (type 3) shapes that producers emit.
+struct CSInfo {
+    int kind = 0;            // 0 device/unknown, 1 ICC, 2 Separation, 3 DeviceN
+    int ncomp = 3;
+    ObjP iccStream;          // ICCBased profile stream
+    ObjP tint, alt;          // Separation/DeviceN: transform + alternate space
+    int altKind = 0, altN = 3;
+};
+
+static int deviceComps(ObjP cs) {
+    if (!cs) return 3;
+    if (cs->t == O_NAME) {
+        if (cs->str == "DeviceGray" || cs->str == "G" || cs->str == "CalGray") return 1;
+        if (cs->str == "DeviceCMYK" || cs->str == "CMYK") return 4;
+        return 3;
+    }
+    return 3;
+}
+
+static void resolveCS(Document* doc, ObjP cs, ObjP named, CSInfo& out, int depth = 0) {
+    if (!cs || depth > 4) return;
+    cs = doc->resolve(cs);
+    if (!cs) return;
+    if (cs->t == O_NAME) {
+        if (named) {
+            ObjP r = doc->resolve(named->get(cs->str.c_str()));
+            if (r) { resolveCS(doc, r, named, out, depth + 1); return; }
+        }
+        out.kind = 0;
+        out.ncomp = deviceComps(cs);
+        return;
+    }
+    if (cs->t != O_ARR || cs->arr.empty()) return;
+    std::string fam = objName(doc->resolve(cs->arr[0]));
+    if (fam == "CalRGB" || fam == "DeviceRGB") { out.kind = 0; out.ncomp = 3; return; }
+    if (fam == "CalGray" || fam == "DeviceGray") { out.kind = 0; out.ncomp = 1; return; }
+    if (fam == "DeviceCMYK") { out.kind = 0; out.ncomp = 4; return; }
+    if (fam == "ICCBased") {
+        out.kind = 1;
+        if (cs->arr.size() > 1) {
+            out.iccStream = doc->resolve(cs->arr[1]);
+            out.ncomp = (int)num(doc->resolve(out.iccStream ? out.iccStream->get("N") : nullptr), 3);
+        }
+        return;
+    }
+    if (fam == "Separation" && cs->arr.size() >= 4) {
+        out.kind = 2;
+        out.ncomp = 1;
+        out.tint = cs->arr[3];
+        out.alt = cs->arr[2];
+        CSInfo a; resolveCS(doc, out.alt, named, a, depth + 1);
+        out.altKind = a.kind; out.altN = a.ncomp;
+        if (a.kind == 1) out.iccStream = a.iccStream;
+        return;
+    }
+    if (fam == "DeviceN" && cs->arr.size() >= 4) {
+        ObjP names = doc->resolve(cs->arr[1]);
+        out.kind = 3;
+        out.ncomp = names && names->t == O_ARR ? (int)names->arr.size() : 1;
+        out.tint = cs->arr[3];
+        out.alt = cs->arr[2];
+        CSInfo a; resolveCS(doc, out.alt, named, a, depth + 1);
+        out.altKind = a.kind; out.altN = a.ncomp;
+        if (a.kind == 1) out.iccStream = a.iccStream;
+        return;
+    }
+    out.kind = 0;
+    out.ncomp = deviceComps(cs);
+}
+
+// Evaluate a PDF function that takes nIn inputs and returns nOut components.
+static bool evalFunctionN(Document* doc, ObjP fn, const double* in, int nIn, double* out, int nOut, int depth = 0) {
+    if (!fn || depth > 4) return false;
+    fn = doc->resolve(fn);
+    if (!fn) return false;
+    int type = (int)num(doc->resolve(fn->get("FunctionType")), -1);
+
+    auto norm = [&](ObjP domain, int i, double v) {
+        double a = 0, b = 1;
+        if (domain && domain->t == O_ARR && (int)domain->arr.size() >= 2 * (i + 1)) {
+            a = num(doc->resolve(domain->arr[2 * i]), 0);
+            b = num(doc->resolve(domain->arr[2 * i + 1]), 1);
+        }
+        double t = (v - a) / (b - a > 1e-9 ? b - a : 1);
+        return std::max(0.0, std::min(1.0, t));
+    };
+
+    if (type == 2 && nIn >= 1) {
+        ObjP c0 = doc->resolve(fn->get("C0")), c1 = doc->resolve(fn->get("C1"));
+        double N = num(doc->resolve(fn->get("N")), 1);
+        double t = std::pow(norm(doc->resolve(fn->get("Domain")), 0, in[0]), N);
+        for (int i = 0; i < nOut; i++) {
+            double a = c0 && (int)c0->arr.size() > i ? num(doc->resolve(c0->arr[i]), 0) : 0.0;
+            double b = c1 && (int)c1->arr.size() > i ? num(doc->resolve(c1->arr[i]), 1) : 1.0;
+            out[i] = a + (b - a) * t;
+        }
+        return true;
+    }
+    if (type == 0 && fn->isStream) {
+        std::string data;
+        if (!doc->decodeStream(fn, data)) return false;
+        ObjP size = doc->resolve(fn->get("Size"));
+        ObjP rng = doc->resolve(fn->get("Range"));
+        ObjP dom = doc->resolve(fn->get("Domain"));
+        int bits = (int)num(doc->resolve(fn->get("BitsPerSample")), 8);
+        if (!size || size->t != O_ARR || size->arr.empty()) return false;
+        int m = (int)size->arr.size();
+        std::vector<int> dim(m);
+        for (int i = 0; i < m; i++) dim[i] = (int)num(doc->resolve(size->arr[i]), 2);
+        std::vector<double> u(m);
+        for (int i = 0; i < m; i++) u[i] = norm(dom, i, i < nIn ? in[i] : 0.0);
+        // linear interpolation on the sample grid, 2^m corners
+        std::vector<int> lo(m), hi(m);
+        std::vector<double> f(m);
+        for (int i = 0; i < m; i++) {
+            double x = u[i] * (dim[i] - 1);
+            lo[i] = (int)std::floor(x);
+            hi[i] = std::min(dim[i] - 1, lo[i] + 1);
+            f[i] = x - lo[i];
+        }
+        int nout = nOut;
+        for (int o = 0; o < nout; o++) out[o] = 0;
+        int corners = 1 << m;
+        for (int c = 0; c < corners; c++) {
+            double w = 1.0;
+            size_t idx = 0;          // sample index in the m-dimensional grid
+            size_t stride = 1;
+            for (int i = m - 1; i >= 0; i--) {
+                int bit = (c >> i) & 1;
+                int coord = bit ? hi[i] : lo[i];
+                w *= bit ? f[i] : (1.0 - f[i]);
+                idx += (size_t)coord * stride;
+                stride *= dim[i];
+            }
+            if (w == 0.0) continue;
+            for (int o = 0; o < nout; o++) {
+                size_t sampleIdx = idx * nout + o;
+                double raw = 0;
+                if (bits == 8) raw = sampleIdx < data.size() ? (unsigned char)data[sampleIdx] / 255.0 : 0;
+                else if (bits == 16) {
+                    size_t b = sampleIdx * 2;
+                    raw = (b + 1 < data.size())
+                        ? ((unsigned char)data[b] * 256 + (unsigned char)data[b + 1]) / 65535.0 : 0;
+                }
+                double rlo = 0, rhi = 1;
+                if (rng && (int)rng->arr.size() >= 2 * (o + 1)) {
+                    rlo = num(doc->resolve(rng->arr[2 * o]), 0);
+                    rhi = num(doc->resolve(rng->arr[2 * o + 1]), 1);
+                }
+                out[o] += w * (rlo + (rhi - rlo) * raw);
+            }
+        }
+        return true;
+    }
+    if (type == 3 && nIn >= 1) {
+        ObjP fns = doc->resolve(fn->get("Functions"));
+        ObjP bounds = doc->resolve(fn->get("Bounds"));
+        ObjP enc = doc->resolve(fn->get("Encode"));
+        if (!fns || !bounds) return false;
+        double t = norm(doc->resolve(fn->get("Domain")), 0, in[0]);
+        int k = 0, n = (int)fns->arr.size();
+        while (k < n - 1 && k < (int)bounds->arr.size() && t > num(doc->resolve(bounds->arr[k]), 1)) k++;
+        double lo = 0, hi = 1;
+        if (enc && (int)enc->arr.size() >= 2 * (k + 1)) {
+            lo = num(doc->resolve(enc->arr[2 * k]), 0);
+            hi = num(doc->resolve(enc->arr[2 * k + 1]), 1);
+        }
+        double sub = lo + (hi - lo) * t;
+        return evalFunctionN(doc, fns->arr[k], &sub, 1, out, nOut, depth + 1);
+    }
+    return false;
 }
 
 // ─── mesh shadings (types 4-7) and the type 1 function shading ────────────
@@ -2130,7 +2336,12 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
             while (q + 1 < lx.end && !(q[0] == 'E' && q[1] == 'I')) ++q;
             lx.p = (q + 2 <= lx.end) ? q + 2 : lx.end;
         } else if (op == "CS" || op == "cs") {
-            if (!stack.empty() && stack.back()->t == O_NAME) lastPathName = stack.back()->str;
+            if (!stack.empty() && stack.back()->t == O_NAME) {
+                lastPathName = stack.back()->str;
+                ObjP cs = colorspaces ? doc->resolve(colorspaces->get(lastPathName.c_str())) : nullptr;
+                if (!cs) cs = mkName(lastPathName);
+                if (op == "CS") gs.strokeCS = cs; else gs.fillCS = cs;
+            }
         } else if (op == "G") {
             float v = (float)numArg(1, 0);
             gs.stroke[0] = gs.stroke[1] = gs.stroke[2] = v;
@@ -2168,13 +2379,38 @@ void Interp::exec(const std::string& data, ObjP resources, GState gs) {
                 }
             } else {
                 float* dst = strokeOp ? gs.stroke : gs.fill;
-                if (stack.size() == 1) {
-                    float v = (float)numArg(1, 0);
-                    dst[0] = dst[1] = dst[2] = v;
-                } else if (stack.size() == 3) {
-                    dst[0] = (float)numArg(3, 0); dst[1] = (float)numArg(2, 0); dst[2] = (float)numArg(1, 0);
-                } else if (stack.size() >= 4) {
-                    cmykToRgb(numArg(4, 0), numArg(3, 0), numArg(2, 0), numArg(1, 0), dst);
+                ObjP csObj = strokeOp ? gs.strokeCS : gs.fillCS;
+                CSInfo info;
+                resolveCS(doc, csObj, colorspaces, info);
+                bool handled = false;
+                if (info.kind == 2 || info.kind == 3) {
+                    // spot / multi-ink tint: run the transform into the alternate space
+                    int nIn = info.ncomp;
+                    double tin[4] = {0, 0, 0, 0};
+                    for (int i = 0; i < nIn && i < 4; i++) tin[i] = numArg(nIn - i, 0);
+                    double alt[4] = {0, 0, 0, 1};
+                    if (evalFunctionN(doc, info.tint, tin, nIn, alt, info.altN)) {
+                        if (info.altN == 1) {
+                            dst[0] = dst[1] = dst[2] = (float)alt[0];
+                        } else if (info.altN == 3) {
+                            dst[0] = (float)alt[0]; dst[1] = (float)alt[1]; dst[2] = (float)alt[2];
+                        } else if (info.altN >= 4) {
+                            cmykToRgb(alt[0], alt[1], alt[2], alt[3], dst);
+                        }
+                        handled = true;
+                    } else {
+                        st->note("spot tint transform");
+                    }
+                }
+                if (!handled) {
+                    if (stack.size() == 1) {
+                        float v = (float)numArg(1, 0);
+                        dst[0] = dst[1] = dst[2] = v;
+                    } else if (stack.size() == 3) {
+                        dst[0] = (float)numArg(3, 0); dst[1] = (float)numArg(2, 0); dst[2] = (float)numArg(1, 0);
+                    } else if (stack.size() >= 4) {
+                        cmykToRgb(numArg(4, 0), numArg(3, 0), numArg(2, 0), numArg(1, 0), dst);
+                    }
                 }
                 if (strokeOp) gs.strokePat = nullptr; else gs.fillPat = nullptr;
             }

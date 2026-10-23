@@ -1519,6 +1519,27 @@ static void parseToUnicode(Document* doc, const std::string& cm, std::map<int, i
     }
 }
 
+static bool cffTableFromSfnt(const std::string& s, std::string& out) {
+    if (s.size() < 12) return false;
+    auto u32 = [&](size_t o) {
+        return ((uint32_t)(uint8_t)s[o] << 24) | ((uint32_t)(uint8_t)s[o + 1] << 16) |
+               ((uint32_t)(uint8_t)s[o + 2] << 8) | (uint32_t)(uint8_t)s[o + 3];
+    };
+    uint32_t ver = u32(0);
+    if (ver != 0x4F54544Fu && ver != 0x00010000u && ver != 0x74727565u) return false;
+    int n = ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+    if (n <= 0 || n > 64) return false;
+    for (int i = 0; i < n; i++) {
+        size_t o = 12 + (size_t)i * 16;
+        if (o + 16 > s.size()) return false;
+        if (s.compare(o, 4, "CFF ") == 0) {
+            uint32_t off = u32(o + 8), len = u32(o + 12);
+            if ((size_t)off + len <= s.size() && len > 16) { out = s.substr(off, len); return true; }
+        }
+    }
+    return false;
+}
+
 Font* Document::font(const ObjP& fontDict) {
     ObjP fd = resolve(fontDict);
     if (!fd || fd->t != O_DICT) return nullptr;
@@ -1531,6 +1552,16 @@ Font* Document::font(const ObjP& fontDict) {
     ObjP base = resolve(fd->get("BaseFont"));
     f->base = objName(base);
     f->subtype = objName(resolve(fd->get("Subtype")));
+    if (f->subtype == "Type3") {
+        // Glyphs are content streams, and /FontMatrix maps glyph space to text
+        // space (usually 1/1000, but producers are free to use anything).
+        f->type3 = true;
+        f->charProcs = resolve(fd->get("CharProcs"));
+        f->res3 = resolve(fd->get("Resources"));
+        ObjP fmx = resolve(fd->get("FontMatrix"));
+        if (fmx && fmx->t == O_ARR && fmx->arr.size() == 6)
+            for (int i = 0; i < 6; i++) f->fm[i] = objNum(resolve(fmx->arr[i]), (i == 0 || i == 3) ? 0.001 : 0.0);
+    }
 
     ObjP descFont = fd;
     if (f->subtype == "Type0") {
@@ -1601,9 +1632,15 @@ Font* Document::font(const ObjP& fontDict) {
             if (decodeStream(ff3, prog) && prog.size() > 16) {
                 std::string sub = objName(resolve(ff3->get("Subtype")));
                 bool bareCff = (uint8_t)prog[0] == 1 && (uint8_t)prog[1] == 0;
+                std::string cffProg;
                 if (sub == "Type1C" || sub == "CIDFontType0C" || (sub.empty() && bareCff)) {
+                    cffProg = prog;
+                } else if (sub == "OpenType") {
+                    cffTableFromSfnt(prog, cffProg);
+                }
+                if (!cffProg.empty()) {
                     auto cf = std::make_shared<CffFont>();
-                    if (cf->parse((const uint8_t*)prog.data(), prog.size())) f->cff = cf;
+                    if (cf->parse((const uint8_t*)cffProg.data(), cffProg.size())) f->cff = cf;
                     else warn("CFF font failed to parse: " + f->base);
                 } else {
                     f->embedded = prog;

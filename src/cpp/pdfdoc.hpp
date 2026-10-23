@@ -89,6 +89,10 @@ struct Font {
     std::string embedded;                  // /FontFile2 TrueType or /FontFile3 OpenType bytes
     std::shared_ptr<CffFont> cff;          // /FontFile3 Type1C or CIDFontType0C
     bool isCid = false;                    // Type0 (2-byte codes, CID space)
+    // Type3: glyphs are content streams in /CharProcs, mapped by /FontMatrix.
+    bool type3 = false;
+    ObjP charProcs, res3;
+    double fm[6] = {0.001, 0, 0, 0.001, 0, 0};
     // /Encoding CMap for a Type0 font when it is not /Identity-H: predefined
     // (cmapFind) or parsed from an embedded stream. Codes have their own byte
     // width and must go through it before any CID -> GID step.
