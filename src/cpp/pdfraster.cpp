@@ -2805,15 +2805,64 @@ static void paintWidgetFallback(Document* doc, Canvas& cv, const Mat& ctm,
 
     if (isButton) {
         if (checked) {
-            double cx0 = x0 + (x1 - x0) * 0.22, cx1 = x1 - (x1 - x0) * 0.22;
-            double cy0 = y0 + (y1 - y0) * 0.22, cy1 = y1 - (y1 - y0) * 0.22;
-            code += "q 0 0 0 RG " + std::to_string(std::max(1.0, bw)) + " w " +
-                    std::to_string(cx0) + " " + std::to_string(cy0) + " m " +
-                    std::to_string(cx1) + " " + std::to_string(cy1) + " l S " +
-                    std::to_string(cx0) + " " + std::to_string(cy1) + " m " +
-                    std::to_string(cx1) + " " + std::to_string(cy0) + " l S Q\n";
+            double w = x1 - x0, h = y1 - y0;
+            double tx0 = x0 + w * 0.22, ty0 = y0 + h * 0.52;
+            double tx1 = x0 + w * 0.42, ty1 = y0 + h * 0.26;
+            double tx2 = x0 + w * 0.78, ty2 = y0 + h * 0.78;
+            code += "q 0 0 0 RG " + std::to_string(std::max(1.2, bw * 1.6)) + " w 1 j " +
+                    std::to_string(tx0) + " " + std::to_string(ty0) + " m " +
+                    std::to_string(tx1) + " " + std::to_string(ty1) + " l " +
+                    std::to_string(tx2) + " " + std::to_string(ty2) + " l S Q\n";
         }
     } else if (!value.empty()) {
+        // A /Ch widget without the combo flag is a list box: it paints every
+        // option, not just the value, with the selected row highlighted.
+        ObjP field = an;
+        ObjP parent = doc->resolve(an->get("Parent"));
+        if (parent) field = parent;
+        std::string ft = objName(doc->resolve(field->get("FT")));
+        ObjP opt = doc->resolve(field->get("Opt"));
+        ObjP ff = doc->resolve(field->get("Ff"));
+        int ffv = ff ? (int)num(ff, 0) : 0;
+        bool combo = (ffv & 0x20000) != 0;
+        if (ft == "Ch" && !combo && opt && opt->t == O_ARR && !opt->arr.empty()) {
+            int rows = (int)opt->arr.size();
+            double rowH = std::min(14.0, (y1 - y0) / std::max(1, rows));
+            double size = std::min(11.0, rowH * 0.72);
+            int top = 0;
+            ObjP ti = doc->resolve(field->get("TI"));
+            if (ti) top = (int)num(ti, 0);
+            double cy = y1 - rowH;
+            for (int r = 0; r < rows && cy >= y0 - 0.5; r++) {
+                ObjP e = doc->resolve(opt->arr[r]);
+                std::string label;
+                if (e && e->t == O_ARR && e->arr.size() >= 2) {
+                    ObjP txt = doc->resolve(e->arr[1]);
+                    if (txt && txt->t == O_STR) label = txt->str;
+                } else if (e && e->t == O_STR) label = e->str;
+                if (r >= top) {
+                    bool sel = (label == value);
+                    if (sel) {
+                        char bgc[128];
+                        snprintf(bgc, sizeof bgc,
+                                 "q 0.72 0.80 0.92 rg %.2f %.2f %.2f %.2f re f Q\n",
+                                 x0 + 1, cy, x1 - x0 - 2, rowH);
+                        code += bgc;
+                    }
+                    std::string esc2;
+                    for (char ch : label) {
+                        if (ch == '(' || ch == ')' || ch == '\\') esc2 += '\\';
+                        esc2 += ch;
+                    }
+                    char line[512];
+                    snprintf(line, sizeof line, "BT /Helv %.2f Tf 0 0 0 rg %.2f %.2f Td (%s) Tj ET\n",
+                             size, x0 + 3.0, cy + rowH * 0.22, esc2.c_str());
+                    code += line;
+                }
+                cy -= rowH;
+            }
+            goto widgetCodeDone;
+        }
         double size = std::min(12.0, (y1 - y0) * 0.62);
         std::string esc;
         for (char ch : value) {
@@ -2824,6 +2873,7 @@ static void paintWidgetFallback(Document* doc, Canvas& cv, const Mat& ctm,
                  size, x0 + 2.0, y0 + (y1 - y0 - size) * 0.5 + size * 0.22, esc.c_str());
         code += buf;
     }
+widgetCodeDone:
 
     // a minimal resource dict with one standard font
     ObjP fontDict = mkDict();

@@ -26,7 +26,7 @@ fixture that fails today.
 | Type3, CID-CFF in OpenType | done | `type3.pdf` matches MuPDF exactly; OTTO table extraction added |
 | Type1 PFB | **missing** | substitute face |
 | OCG visibility | done | `ocg.pdf` matches MuPDF exactly |
-| Widgets/forms | done | `form.pdf` at 1.18/255; fields listed, `setField` repaints |
+| Widgets/forms | done | `form.pdf` at 2.87/255; list boxes paint every option with the selected row highlighted (MuPDF overlaps its rows) |
 
 Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
 ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
