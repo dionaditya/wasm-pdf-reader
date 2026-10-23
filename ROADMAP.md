@@ -26,7 +26,7 @@ fixture that fails today.
 | Type3, CID-CFF in OpenType | done | `type3.pdf` matches MuPDF exactly; OTTO table extraction added |
 | Type1 PFB | **missing** | substitute face |
 | OCG visibility | done | `ocg.pdf` matches MuPDF exactly |
-| Widgets/forms | **missing** | no `AcroForm`, no widget appearance generation |
+| Widgets/forms | done | `form.pdf` at 1.18/255; fields listed, `setField` repaints |
 
 Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
 ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
@@ -179,7 +179,7 @@ OpenType = parse `CFF ` table out of the sfnt and hand it to `CffFont`.
 *Accept*: ≤ 1/255 on text pages; glyph count from `getPageText` unchanged.
 *Risk*: Type3 `/ImageMask` glyphs and `/ColorSpace` in the glyph dict.
 
-### M8 — OCG, widgets, forms (2 weeks) — *OCG + outline done, widgets open*
+### M8 — OCG, widgets, forms (2 weeks) — *done*
 *Why*: layer toggling and fillable forms are what makes a reader feel complete;
 MuPDF generates widget appearances and fills AcroForm state.
 *Where*: new `pdfocg.cpp` + `pdfform.cpp`; `pdfraster.cpp` annotation loop

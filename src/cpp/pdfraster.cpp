@@ -2747,6 +2747,108 @@ static bool paintAnnotFallback(Document* doc, Canvas& cv, const Mat& ctm,
 } // namespace
 
 // ─── public entry point ─────────────────────────────────────────────────────
+// A form widget with no /AP stream still has to be visible: producers hand out
+// files whose fields were never flattened, and an empty box looks like a render
+// bug. Synthesize the appearance from /MK, /V and /AS: background, border, the
+// value text, and a tick for buttons.
+static void paintWidgetFallback(Document* doc, Canvas& cv, const Mat& ctm,
+                                const ObjP& an, const GState& gs, RenderStats* st) {
+    ObjP rect = doc->resolve(an->get("Rect"));
+    if (!rect || rect->t != O_ARR || rect->arr.size() < 4) return;
+    double r[4];
+    for (int i = 0; i < 4; i++) r[i] = num(doc->resolve(rect->arr[i]), 0);
+    double x0 = std::min(r[0], r[2]), x1 = std::max(r[0], r[2]);
+    double y0 = std::min(r[1], r[3]), y1 = std::max(r[1], r[3]);
+    if (x1 - x0 < 1 || y1 - y0 < 1) return;
+
+    ObjP mk = doc->resolve(an->get("MK"));
+    double bg[3] = {1, 1, 1}, bc[3] = {0.2, 0.2, 0.2};
+    double bw = 1.0;
+    if (mk) {
+        ObjP v = doc->resolve(mk->get("BG"));
+        if (v && v->t == O_ARR) for (int i = 0; i < 3 && i < (int)v->arr.size(); i++) bg[i] = num(doc->resolve(v->arr[i]), 1);
+        v = doc->resolve(mk->get("BC"));
+        if (v && v->t == O_ARR) for (int i = 0; i < 3 && i < (int)v->arr.size(); i++) bc[i] = num(doc->resolve(v->arr[i]), 0);
+    }
+    ObjP bs = doc->resolve(an->get("BS"));
+    if (bs) bw = num(doc->resolve(bs->get("W")), 1.0);
+    bw = std::min(bw, std::max(0.5, (y1 - y0) * 0.08));
+
+    // field value: /V for text and choice, /AS for buttons
+    std::string value;
+    ObjP as = doc->resolve(an->get("AS"));
+    ObjP v = doc->resolve(an->get("V"));
+    if (!v) {
+        ObjP parent = doc->resolve(an->get("Parent"));
+        if (parent) v = doc->resolve(parent->get("V"));
+        if (!as && parent) as = doc->resolve(parent->get("AS"));
+    }
+    if (v && v->t == O_STR) value = v->str;
+    else if (v && v->t == O_NAME) value = v->str;
+    else if (v && v->t == O_ARR && !v->arr.empty()) {
+        ObjP first = doc->resolve(v->arr[0]);
+        if (first && first->t == O_STR) value = first->str;
+    }
+    bool isButton = (as && as->t == O_NAME) ||
+                    objName(doc->resolve(an->get("FT"))) == "Btn";
+    bool checked = as && as->t == O_NAME && as->str != "Off";
+
+    char buf[512];
+    std::string code;
+    code += "q " + std::to_string(bg[0]) + " " + std::to_string(bg[1]) + " " + std::to_string(bg[2]) +
+            " rg " + std::to_string(x0) + " " + std::to_string(y0) + " " +
+            std::to_string(x1 - x0) + " " + std::to_string(y1 - y0) + " re f Q\n";
+    code += "q " + std::to_string(bc[0]) + " " + std::to_string(bc[1]) + " " + std::to_string(bc[2]) +
+            " RG " + std::to_string(bw) + " w " + std::to_string(x0 + bw / 2) + " " +
+            std::to_string(y0 + bw / 2) + " " + std::to_string(x1 - x0 - bw) + " " +
+            std::to_string(y1 - y0 - bw) + " re S Q\n";
+
+    if (isButton) {
+        if (checked) {
+            double cx0 = x0 + (x1 - x0) * 0.22, cx1 = x1 - (x1 - x0) * 0.22;
+            double cy0 = y0 + (y1 - y0) * 0.22, cy1 = y1 - (y1 - y0) * 0.22;
+            code += "q 0 0 0 RG " + std::to_string(std::max(1.0, bw)) + " w " +
+                    std::to_string(cx0) + " " + std::to_string(cy0) + " m " +
+                    std::to_string(cx1) + " " + std::to_string(cy1) + " l S " +
+                    std::to_string(cx0) + " " + std::to_string(cy1) + " m " +
+                    std::to_string(cx1) + " " + std::to_string(cy0) + " l S Q\n";
+        }
+    } else if (!value.empty()) {
+        double size = std::min(12.0, (y1 - y0) * 0.62);
+        std::string esc;
+        for (char ch : value) {
+            if (ch == '(' || ch == ')' || ch == '\\') esc += '\\';
+            esc += ch;
+        }
+        snprintf(buf, sizeof buf, "BT /Helv %.2f Tf 0 0 0 rg %.2f %.2f Td (%s) Tj ET\n",
+                 size, x0 + 2.0, y0 + (y1 - y0 - size) * 0.5 + size * 0.22, esc.c_str());
+        code += buf;
+    }
+
+    // a minimal resource dict with one standard font
+    ObjP fontDict = mkDict();
+    ObjP helv = mkDict();
+    helv->dict.push_back({"Type", mkName("Font")});
+    helv->dict.push_back({"Subtype", mkName("Type1")});
+    helv->dict.push_back({"BaseFont", mkName("Helvetica")});
+    fontDict->dict.push_back({"Helv", helv});
+    ObjP res = mkDict();
+    res->dict.push_back({"Font", fontDict});
+
+    Interp ai;
+    ai.doc = doc;
+    ai.cv = &cv;
+    ai.st = st;
+    ai.textSink = nullptr;
+    GState ags = gs;
+    ags.ctm = ctm;
+    ags.clip = nullptr;
+    ags.fillPat = nullptr;
+    ags.strokePat = nullptr;
+    ai.devToPage = ags.ctm.inverse();
+    ai.exec(code, res, ags);
+}
+
 bool Renderer::renderPage(int pageIndex, double scale, Image& out, RenderStats* st) {
     static RenderStats dummy;
     if (!st) st = &dummy;
@@ -2917,6 +3019,10 @@ bool Renderer::renderPage(int pageIndex, double scale, Image& out, RenderStats* 
                 }
             }
 
+            if (!painted && sub == "Widget" && rectOk) {
+                paintWidgetFallback(doc, cv, ctm, an, gs, st);
+                painted = true;
+            }
             if (!painted && sub != "Link" && sub != "Popup")
                 paintAnnotFallback(doc, cv, ctm, sub, an);
         }

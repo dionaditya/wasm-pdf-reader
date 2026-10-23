@@ -573,4 +573,44 @@ await check('outline: bookmarks resolve to page indices', async () => {
 });
 ocgDoc.close();
 
+// ─── AcroForm widgets ───────────────────────────────────────────────────────
+const formBytes = await readFile(join(root, 'test', 'fixtures', 'form.pdf'));
+const formDoc = await PdfDocument.open(formBytes, { filename: 'form.pdf' });
+
+await check('form: fields are listed with name, type, value and page', async () => {
+  const fields = formDoc.form;
+  assert.equal(fields.length, 3);
+  assert.deepEqual(fields.map((f) => f.name), ['nama', 'setuju', 'kelas']);
+  assert.equal(fields[0].type, 'Tx');
+  assert.equal(fields[0].value, 'Ulfah');
+  assert.equal(fields[0].page, 0);
+});
+
+await check('form: a widget with no /AP still paints its box and value', async () => {
+  const out = await formDoc.render(0, { scale: 1.5 });
+  // inside the text field: white box with dark glyphs
+  let dark = 0;
+  for (let y = 90; y < 150; y++)     // /Rect [30 200 270 240], y flipped at 1.5
+    for (let x = 45; x < 405; x++) {
+      const i = (y * out.imageData.width + x) * 4;
+      if (out.imageData.data[i] < 100) dark++;
+    }
+  assert.ok(dark > 20, `field text pixels ${dark}`);
+});
+
+await check('form: setField changes the rendered page', async () => {
+  const before = await formDoc.render(0, { scale: 1 });
+  const count = (img) => {
+    let n = 0;
+    for (let i = 0; i < img.data.length; i += 4) if (img.data[i] < 150) n++;
+    return n;
+  };
+  const a = count(before.imageData);
+  assert.ok(formDoc.setField('nama', 'Ulfah Hanafi Qushoyyi Noerdin'));
+  const after = await formDoc.render(0, { scale: 1 });
+  assert.ok(count(after.imageData) > a, 'a longer value must paint more glyphs');
+  assert.equal(formDoc.setField('tidak-ada', 'x'), false);
+});
+formDoc.close();
+
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

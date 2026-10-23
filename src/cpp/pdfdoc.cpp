@@ -1594,6 +1594,152 @@ bool Document::ocgVisible(const ObjP& ocg) {
     return it == ocgState.end() ? true : it->second;
 }
 
+// ─── AcroForm model ────────────────────────────────────────────────────────
+namespace {
+struct FieldHit {
+    ObjP field, widget;
+    std::string name, ft, value;
+    int page = -1;
+    double rect[4] = {0, 0, 0, 0};
+    bool hasRect = false;
+};
+}  // namespace
+
+static void collectFields(Document* doc, ObjP node, const std::string& prefix,
+                          std::vector<FieldHit>& out, int depth = 0) {
+    if (!node || node->t != O_DICT || depth > 12) return;
+    std::string part;
+    ObjP t = doc->resolve(node->get("T"));
+    if (t && t->t == O_STR) part = t->str;
+    std::string name = prefix.empty() ? part : (part.empty() ? prefix : prefix + "." + part);
+
+    ObjP kids = doc->resolve(node->get("Kids"));
+    ObjP ft = doc->resolve(node->get("FT"));
+    bool isWidget = objName(doc->resolve(node->get("Subtype"))) == "Widget";
+    if (!kids || isWidget) {
+        if (!ft && !isWidget) return;
+        FieldHit h;
+        h.field = node;
+        h.name = name;
+        if (ft && ft->t == O_NAME) h.ft = ft->str;
+        ObjP v = doc->resolve(node->get("V"));
+        if (v && v->t == O_STR) h.value = v->str;
+        else if (v && v->t == O_NAME) h.value = v->str;
+        ObjP r = doc->resolve(node->get("Rect"));
+        if (r && r->t == O_ARR && r->arr.size() >= 4) {
+            for (int i = 0; i < 4; i++) h.rect[i] = objNum(doc->resolve(r->arr[i]), 0);
+            h.hasRect = true;
+        }
+        if (isWidget) h.widget = node;
+        out.push_back(h);
+        return;
+    }
+    for (auto& k : kids->arr) {
+        ObjP kid = doc->resolve(k);
+        if (!kid) continue;
+        // A kid may be the widget of this terminal field (no /T of its own).
+        if (objName(doc->resolve(kid->get("Subtype"))) == "Widget" && !kid->get("T")) {
+            FieldHit h;
+            h.field = node;
+            h.widget = kid;
+            h.name = name;
+            if (ft && ft->t == O_NAME) h.ft = ft->str;
+            ObjP v = doc->resolve(node->get("V"));
+            if (v && v->t == O_STR) h.value = v->str;
+            else if (v && v->t == O_NAME) h.value = v->str;
+            ObjP r = doc->resolve(kid->get("Rect"));
+            if (r && r->t == O_ARR && r->arr.size() >= 4) {
+                for (int i = 0; i < 4; i++) h.rect[i] = objNum(doc->resolve(r->arr[i]), 0);
+                h.hasRect = true;
+            }
+            out.push_back(h);
+        } else {
+            collectFields(doc, kid, name, out, depth + 1);
+        }
+    }
+}
+
+static std::vector<FieldHit> gatherFields(Document* doc) {
+    std::vector<FieldHit> hits;
+    ObjP cat = doc->resolve(doc->trailer ? doc->trailer->get("Root") : nullptr);
+    ObjP acro = cat ? doc->resolve(cat->get("AcroForm")) : nullptr;
+    if (!acro) return hits;
+    ObjP fields = doc->resolve(acro->get("Fields"));
+    if (!fields || fields->t != O_ARR) return hits;
+    for (auto& f : fields->arr) collectFields(doc, doc->resolve(f), "", hits);
+
+    // map every widget to the page whose /Annots contains it
+    ObjP pages = cat ? doc->resolve(cat->get("Pages")) : nullptr;
+    std::vector<ObjP> queue;
+    if (pages) queue.push_back(pages);
+    int idx = 0;
+    while (!queue.empty()) {
+        ObjP node = queue.front();
+        queue.erase(queue.begin());
+        if (!node || node->t != O_DICT) continue;
+        std::string tn = objName(doc->resolve(node->get("Type")));
+        if (tn == "Pages") {
+            ObjP kids = doc->resolve(node->get("Kids"));
+            if (!kids || kids->t != O_ARR) continue;
+            for (auto it = kids->arr.rbegin(); it != kids->arr.rend(); ++it) queue.insert(queue.begin(), doc->resolve(*it));
+        } else {
+            ObjP annots = doc->resolve(node->get("Annots"));
+            if (annots && annots->t == O_ARR) {
+                for (auto& e : annots->arr) {
+                    ObjP an = doc->resolve(e);
+                    if (!an) continue;
+                    for (auto& h : hits)
+                        if (h.widget && h.widget.get() == an.get()) h.page = idx;
+                }
+            }
+            idx++;
+        }
+    }
+    return hits;
+}
+
+std::string Document::formJson() {
+    auto hits = gatherFields(this);
+    std::string out = "[";
+    bool first = true;
+    for (auto& h : hits) {
+        if (!first) out += ',';
+        first = false;
+        out += "{\"name\":\"" + jsonEscapeText(h.name) + "\"";
+        out += ",\"type\":\"" + jsonEscapeText(h.ft.empty() ? "Widget" : h.ft) + "\"";
+        out += ",\"value\":\"" + jsonEscapeText(h.value) + "\"";
+        out += ",\"page\":" + std::to_string(h.page);
+        if (h.hasRect) {
+            out += ",\"rect\":[" + std::to_string((int)h.rect[0]) + "," + std::to_string((int)h.rect[1]) + "," +
+                   std::to_string((int)h.rect[2]) + "," + std::to_string((int)h.rect[3]) + "]";
+        }
+        out += "}";
+    }
+    return out + "]";
+}
+
+bool Document::setFormField(const std::string& name, const std::string& value) {
+    auto hits = gatherFields(this);
+    bool any = false;
+    for (auto& h : hits) {
+        if (h.name != name || !h.field) continue;
+        // /V is a string for text and choice fields, a name for buttons.
+        ObjP v = h.ft == "Btn" ? mkName(value) : mkStr(value);
+        bool replaced = false;
+        for (auto& kv : h.field->dict)
+            if (kv.first == "V") { kv.second = v; replaced = true; break; }
+        if (!replaced) h.field->dict.push_back({"V", v});
+        if (h.ft == "Btn" && h.widget) {      // /AS drives the appearance state
+            bool replaced2 = false;
+            for (auto& kv : h.widget->dict)
+                if (kv.first == "AS") { kv.second = mkName(value); replaced2 = true; break; }
+            if (!replaced2) h.widget->dict.push_back({"AS", mkName(value)});
+        }
+        any = true;
+    }
+    return any;
+}
+
 std::string Document::outlineJson() {
     std::string out = "[";
     ObjP cat = resolve(trailer ? trailer->get("Root") : nullptr);

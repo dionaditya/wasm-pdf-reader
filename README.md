@@ -90,6 +90,10 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   hidden `/OC ... BDC` sections and XObjects with an `/OC` entry are skipped.
 - **Outline** — `document.outline` returns `[{title, page}]` for the bookmark
   tree.
+- **AcroForm** — `document.form` lists `{name, type, value, page, rect}`;
+  `document.setField(name, value)` writes `/V` (and `/AS`) in memory so the next
+  render shows the change. Widgets that ship without an `/AP` stream get a
+  synthesised appearance: background, border, value text and a tick for buttons.
 - **Viewer chrome** — page rail with lazily rendered thumbnails and a print
   action that rasterizes every page at ~120 dpi into a detached sheet, prints it
   and discards it (no print stylesheet can reach into the host page).

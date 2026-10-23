@@ -168,6 +168,42 @@ export class PdfDocument {
     }
   }
 
+  /** AcroForm fields as [{name, type, value, page, rect}]. */
+  get form() {
+    if (!this._handle) return [];
+    try {
+      return JSON.parse(this.Module.UTF8ToString(this.Module._wpdf_form_json(this._handle)));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Fill a field by name. The value lands in /V (and /AS for buttons) inside the
+   * in-memory document, so the next render shows it; returns false when no field
+   * matches.
+   */
+  setField(name, value) {
+    if (!this._handle) return false;
+    const M = this.Module;
+    const enc = (str) => {
+      const bytes = new TextEncoder().encode(String(str));
+      const ptr = M._wpdf_alloc(bytes.length + 1);
+      if (!ptr) throw new Error('out of memory');
+      M.HEAPU8.set(bytes, ptr);            // re-read the view: alloc may grow it
+      M.HEAPU8[ptr + bytes.length] = 0;
+      return ptr;
+    };
+    const a = enc(name);
+    const b = enc(value);
+    try {
+      return M._wpdf_set_field(this._handle, a, b) === 1;
+    } finally {
+      M._wpdf_free(a);
+      M._wpdf_free(b);
+    }
+  }
+
   /** Outline / bookmarks as [{title, page}], page -1 when the dest is unresolved. */
   get outline() {
     if (!this._handle) return [];

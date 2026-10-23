@@ -319,6 +319,20 @@ WPDF_EXPORT const char* wpdf_info_json(void* handle) {
 
 // Parse warnings collected while reading the file, as JSON. Empty array for a
 // clean document; a viewer can surface these instead of failing silently.
+WPDF_EXPORT const char* wpdf_form_json(void* handle) {
+    static std::string out;
+    DocHandle* h = H(handle);
+    out = h ? h->doc.formJson() : "[]";
+    return out.c_str();
+}
+
+// Returns 1 when a field with that name was found and updated.
+WPDF_EXPORT int wpdf_set_field(void* handle, const char* name, const char* value) {
+    DocHandle* h = H(handle);
+    if (!h || !name || !value) return 0;
+    return h->doc.setFormField(std::string(name), std::string(value)) ? 1 : 0;
+}
+
 WPDF_EXPORT const char* wpdf_outline_json(void* handle) {
     static std::string out;
     DocHandle* h = H(handle);

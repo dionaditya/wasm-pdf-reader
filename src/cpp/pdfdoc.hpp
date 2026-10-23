@@ -163,6 +163,11 @@ struct Document {
     // Document outline (bookmarks) as JSON, resolved against the page list.
     std::string outlineJson();
 
+    // AcroForm: terminal fields with their widget rectangle and page, plus a
+    // setter that updates /V in place so the next render shows the new value.
+    std::string formJson();
+    bool setFormField(const std::string& name, const std::string& value);
+
     bool decodeStream(const ObjP& stm, std::string& out);
     bool hasFilter(const ObjP& stm, const char* name);
     // JPEG 2000 images carry their own geometry and component count, so they
