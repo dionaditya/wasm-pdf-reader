@@ -15,6 +15,8 @@ const ICONS = {
   zoomIn: '+',
   fitWidth: '⇔',
   fitPage: '⤢',
+  thumbnails: '▤',
+  print: '⎙',
 };
 
 /** @typedef {Object} ViewerLabels */
@@ -25,6 +27,8 @@ export const defaultLabels = {
   zoomOut: 'Zoom out',
   fitWidth: 'Fit width',
   fitPage: 'Fit page',
+  thumbnails: 'Thumbnails',
+  print: 'Print',
   page: 'Page',
   of: 'of',
   loading: 'Loading document…',
@@ -111,6 +115,8 @@ export function mountPdfReader(target, options = {}) {
   let zoomEl = null;
   let prevBtn = null;
   let nextBtn = null;
+  let thumbsBtn = null;
+  let printBtn = null;
 
   if (opts.toolbar) {
     toolbarEl = el('div', 'wpdf-toolbar');
@@ -141,6 +147,13 @@ export function mountPdfReader(target, options = {}) {
     zoomGroup.append(zoomOut, zoomEl, zoomIn, fitWidth, fitPage);
     toolbarEl.appendChild(zoomGroup);
 
+    const viewGroup = el('div', 'wpdf-toolbar__group');
+    thumbsBtn = button('wpdf-button', labels.thumbnails, ICONS.thumbnails);
+    thumbsBtn.setAttribute('aria-pressed', 'false');
+    printBtn = button('wpdf-button', labels.print, ICONS.print);
+    viewGroup.append(thumbsBtn, printBtn);
+    toolbarEl.appendChild(viewGroup);
+
     root.appendChild(toolbarEl);
   } else if (opts.toolbarSlot) {
     const custom = typeof opts.toolbarSlot === 'function'
@@ -150,8 +163,13 @@ export function mountPdfReader(target, options = {}) {
   }
 
   // ── viewport + status ─────────────────────────────────────────────────────
+  const body = el('div', 'wpdf-body');
+  const thumbsEl = el('aside', 'wpdf-thumbs');
+  thumbsEl.hidden = true;
+  thumbsEl.setAttribute('aria-label', labels.thumbnails);
   const viewport = el('div', `wpdf-viewport${opts.continuous ? ' wpdf-viewport--continuous' : ''}`);
-  root.appendChild(viewport);
+  body.append(thumbsEl, viewport);
+  root.appendChild(body);
 
   const statusEl = opts.status ? el('div', 'wpdf-status') : null;
   if (statusEl) {
@@ -555,6 +573,7 @@ export function mountPdfReader(target, options = {}) {
     const next = Math.max(0, Math.min(state.doc.pageCount - 1, index | 0));
     if (next === state.page && !opts.continuous) return;
     state.page = next;
+    syncThumbsActive();
     if (opts.continuous) {
       const target = state.pageEls[next];
       if (target && scroll) target.scrollIntoView({ block: 'start', behavior: 'auto' });
@@ -639,6 +658,8 @@ export function mountPdfReader(target, options = {}) {
       else if (b.title === labels.zoomOut) setScale(effectiveScale() / 1.25);
       else if (b.title === labels.fitWidth) setScale(state.scale, 'width');
       else if (b.title === labels.fitPage) setScale(state.scale, 'page');
+      else if (b === thumbsBtn) setThumbnails(thumbsEl.hidden);
+      else if (b === printBtn) printDocument();
     });
     pageInput?.addEventListener('change', () => {
       const n = parseInt(pageInput.value, 10);
@@ -705,6 +726,140 @@ export function mountPdfReader(target, options = {}) {
     }, { passive: true });
   }
 
+  // ── thumbnails ────────────────────────────────────────────────────────────
+  // A page rail is the fastest way to navigate a long document, but rendering
+  // every page up front costs more than the first page does. Thumbnails are
+  // therefore built on demand: the rail is populated with placeholders, and an
+  // IntersectionObserver renders a page only when it scrolls into view.
+  let thumbsReady = false;
+  let thumbsObserver = null;
+
+  function thumbScale(doc, index) {
+    const { width } = doc.getPageSize(index);
+    return Math.min(0.5, 130 / Math.max(1, width));
+  }
+
+  function buildThumbs() {
+    if (thumbsReady || !state.doc) return;
+    thumbsReady = true;
+    const doc = state.doc;
+    thumbsEl.textContent = '';
+    thumbsObserver?.disconnect();
+    thumbsObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const btn = entry.target;
+        thumbsObserver.unobserve(btn);
+        drawThumb(btn, Number(btn.dataset.page));
+      }
+    }, { root: thumbsEl, rootMargin: '200px' });
+
+    for (let i = 0; i < doc.pageCount; i++) {
+      const btn = el('button', 'wpdf-thumb');
+      btn.type = 'button';
+      btn.dataset.page = String(i);
+      btn.setAttribute('aria-label', `${labels.page} ${i + 1}`);
+      if (i === state.page) btn.classList.add('wpdf-thumb--active');
+      btn.appendChild(el('span', 'wpdf-thumb__num', String(i + 1)));
+      btn.appendChild(el('div', 'wpdf-thumb__canvas'));
+      thumbsEl.appendChild(btn);
+      thumbsObserver.observe(btn);
+    }
+  }
+
+  async function drawThumb(btn, index) {
+    const doc = state.doc;
+    if (!doc || index < 0 || index >= doc.pageCount) return;
+    try {
+      const out = await doc.render(index, { scale: thumbScale(doc, index) });
+      const holder = btn.querySelector('.wpdf-thumb__canvas');
+      if (!holder) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = out.imageData.width;
+      canvas.height = out.imageData.height;
+      canvas.getContext('2d').putImageData(out.imageData, 0, 0);
+      holder.textContent = '';
+      holder.appendChild(canvas);
+    } catch (err) {
+      btn.classList.add('wpdf-thumb--error');
+    }
+  }
+
+  function syncThumbsActive() {
+    if (thumbsEl.hidden) return;
+    for (const btn of thumbsEl.querySelectorAll('.wpdf-thumb')) {
+      const on = Number(btn.dataset.page) === state.page;
+      btn.classList.toggle('wpdf-thumb--active', on);
+      if (on && btn.scrollIntoView) {
+        btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+  }
+
+  function setThumbnails(on) {
+    const show = !!on;
+    thumbsEl.hidden = !show;
+    if (thumbsBtn) {
+      thumbsBtn.classList.toggle('wpdf-button--active', show);
+      thumbsBtn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    }
+    if (show) {
+      buildThumbs();
+      syncThumbsActive();
+    }
+  }
+
+  thumbsEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.wpdf-thumb');
+    if (!btn) return;
+    goToPage(Number(btn.dataset.page));
+  });
+
+  // ── print ─────────────────────────────────────────────────────────────────
+  // The viewer prints what it renders: every page is rasterized at ~120 dpi
+  // into a detached container, printed, then thrown away. A host stylesheet
+  // cannot reach into that container, and the visible viewer is untouched.
+  let printing = false;
+
+  async function printDocument() {
+    const doc = state.doc;
+    if (!doc || printing) return;
+    printing = true;
+    const wasStatus = state.status;
+    if (printBtn) printBtn.disabled = true;
+    const sheet = el('div', 'wpdf-print');
+
+    try {
+      for (let i = 0; i < doc.pageCount; i++) {
+        const { width, height } = doc.getPageSize(i);
+        const scale = Math.min(2, 120 / 72);
+        const out = await doc.render(i, { scale });
+        const page = el('div', 'wpdf-print__page');
+        page.style.width = `${width}pt`;
+        page.style.height = `${height}pt`;
+        const canvas = document.createElement('canvas');
+        canvas.width = out.imageData.width;
+        canvas.height = out.imageData.height;
+        canvas.getContext('2d').putImageData(out.imageData, 0, 0);
+        page.appendChild(canvas);
+        sheet.appendChild(page);
+      }
+      document.body.appendChild(sheet);
+      document.body.classList.add('wpdf-printing');
+      window.print();
+    } catch (err) {
+      showError(err);
+    } finally {
+      setTimeout(() => {
+        sheet.remove();
+        document.body.classList.remove('wpdf-printing');
+        if (printBtn) printBtn.disabled = false;
+        printing = false;
+        state.status = wasStatus;
+      }, 250);
+    }
+  }
+
   const controller = {
     element: root,
     get document() { return state.doc; },
@@ -722,12 +877,16 @@ export function mountPdfReader(target, options = {}) {
     setInverted: (on) => root.classList.toggle('wpdf-root--invert', !!on),
     search: (query, o) => (state.doc ? state.doc.search(query, o) : []),
     setContinuous,
+    setThumbnails,
+    isThumbnailsVisible: () => !thumbsEl.hidden,
+    print: printDocument,
     isContinuous: () => !!opts.continuous,
     rerender: () => (opts.continuous ? renderContinuous() : renderSingle()),
     destroy() {
       destroyed = true;
       resizeObserver.disconnect();
       observer?.disconnect();
+      thumbsObserver?.disconnect();
       viewport.removeEventListener('wheel', onWheel);
       root.remove();
       state.doc?.close();
