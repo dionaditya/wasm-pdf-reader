@@ -168,6 +168,16 @@ export class PdfDocument {
     }
   }
 
+  /** Outline / bookmarks as [{title, page}], page -1 when the dest is unresolved. */
+  get outline() {
+    if (!this._handle) return [];
+    try {
+      return JSON.parse(this.Module.UTF8ToString(this.Module._wpdf_outline_json(this._handle)));
+    } catch {
+      return [];
+    }
+  }
+
   /** Non-fatal parse warnings ("rebuilt xref", "unsupported filter", ...). */
   get warnings() {
     this._assertOpen();
