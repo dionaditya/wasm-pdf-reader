@@ -20,7 +20,7 @@ fixture that fails today.
 | Paths, clips, dashes, axial/radial shadings, form XObjects | done | fixtures + vision |
 | Tiling patterns | done (45° checker AA still short of the gate) | `patterns.pdf`: hatch 1.41, axis checker 0.29, rotated checker 7.65 vs MuPDF |
 | Blend modes, transparency groups | done | `transparency.pdf`: Multiply 0.42, `/ca 0.5` group 0.54 |
-| Mesh shadings | **missing** | `paintShading` rejects type 1 and 4–7 |
+| Mesh shadings | in progress | types 4/5 decode and Gouraud-fill; not yet within the gate, 6/7 warn |
 | ICC colour management | partial | `iccp.cpp` parses matrix/TRC and A2B0 LUTs; wired into images only, fills still `cmykToRgb` |
 | Separation/DeviceN | **missing** | `cmykToRgb` only, ICC read for `N` |
 | Type3, Type1 PFB, CID-CFF in OpenType wrapper | **missing** | substitute face |

@@ -98,6 +98,85 @@
   padding: 4px 6px;
 }
 
+/* body: thumbnail rail + viewport */
+.wpdf-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.wpdf-thumbs {
+  flex: 0 0 auto;
+  width: 152px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  border-right: 1px solid var(--wpdf-toolbar-border);
+  scrollbar-width: thin;
+}
+.wpdf-thumbs[hidden] { display: none; }
+
+.wpdf-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+}
+.wpdf-thumb:hover { border-color: rgba(255, 255, 255, 0.25); }
+.wpdf-thumb--active { border-color: var(--wpdf-accent); }
+.wpdf-thumb:focus-visible { outline: 2px solid var(--wpdf-accent); outline-offset: 1px; }
+
+.wpdf-thumb__canvas {
+  display: block;
+  min-height: 60px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.wpdf-thumb__canvas canvas { display: block; width: 100%; height: auto; }
+
+.wpdf-thumb__num {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  font-family: var(--wpdf-font);
+  color: #f1f3f4;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+/* print sheet: detached from the viewer, filled page by page, then discarded */
+.wpdf-print { display: none; }
+@media print {
+  body.wpdf-printing > *:not(.wpdf-print) { display: none !important; }
+  body.wpdf-printing .wpdf-print { display: block !important; }
+  .wpdf-print__page {
+    page-break-after: always;
+    break-after: page;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .wpdf-print__page:last-child { page-break-after: auto; break-after: auto; }
+  .wpdf-print__page canvas { width: 100%; height: auto; }
+  @page { margin: 8mm; }
+}
+
 /* viewport */
 .wpdf-viewport {
   flex: 1 1 auto;

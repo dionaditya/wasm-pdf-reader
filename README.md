@@ -48,7 +48,7 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   file.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
   clipping, text, Form and Image XObjects, inline images, `/Rotate` pages,
-  axial and radial shadings, tiling patterns (`/PatternType 1`, cached per
+  axial and radial shadings, mesh shadings (types 4/5, approximate), tiling patterns (`/PatternType 1`, cached per
   pattern and scale, clipped to the painted path), shading patterns, all 15 PDF
   blend modes, `/Group /Transparency` compositing with `/ca` and `/CA`,
   `/SMask` soft masks and `/Mask` stencil masks.
@@ -79,6 +79,9 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   and squiggly) are synthesised from `/QuadPoints` and `/C`, including one mark
   per quad; `/Text` notes without an `/AP` icon get a note icon built from
   `/Rect`. An appearance stream always wins when present.
+- **Viewer chrome** — page rail with lazily rendered thumbnails and a print
+  action that rasterizes every page at ~120 dpi into a detached sheet, prints it
+  and discards it (no print stylesheet can reach into the host page).
 - **Text layer** — glyph runs with page-space boxes, so you can select, copy,
   search and draw highlights without a second parser. The viewer mounts a
   transparent `.wpdf-textlayer` over the canvas (each run is a span, stretched
@@ -90,7 +93,8 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 
 Not supported, and reported through `document.warnings` rather than silently
 approximated: text shaping for scripts that are not stored pre-shaped (Arabic,
-Indic), Type3 fonts, mesh shadings (4–7), soft masks attached with `gs /SMask`
+Indic), Type3 fonts, mesh shadings 6–7 (patch meshes; 4/5 render but are not
+yet verified against MuPDF), soft masks attached with `gs /SMask`
 (a group's own `/ca` and `/BM` do work), non-isolated transparency groups
 (they are composited isolated, which only differs when the group relies on the
 page backdrop), vertical writing (`-V` CMaps paint horizontally),

@@ -856,6 +856,7 @@ struct Interp {
     void paintPath(PathBuilder& pb, bool strokeIt, bool fillIt, bool evenOdd, GState& gs);
     void paintShading(ObjP shadingName, ObjP resources, GState& gs);
     void paintShadingObj(ObjP sh, GState& gs);
+    void paintMeshShading(ObjP sh, int type, int ncomp, GState& gs);
     void paintPattern(const Polys& polys, bool evenOdd, ObjP pat, GState& gs, float alpha);
     void paintTilingPattern(const Polys& polys, bool evenOdd, ObjP pat, GState& gs, float alpha);
 };
@@ -1175,9 +1176,156 @@ void Interp::paintShading(ObjP shadingName, ObjP resources, GState& gs) {
     paintShadingObj(sh, gs);
 }
 
+// ─── mesh shadings (types 4-7) and the type 1 function shading ────────────
+// A mesh is a stream of vertices: coordinates and colour components packed at
+// /BitsPerCoordinate and /BitsPerComponent, each mapped through /Decode. Type 4
+// and 5 are Gouraud triangles, which is what producers actually emit for
+// gradients and soft backgrounds; type 6/7 patch meshes stay unsupported and are
+// reported instead of being approximated into a wrong picture.
+
+struct BitReader {
+    const std::string& d;
+    size_t bit = 0;
+    explicit BitReader(const std::string& data) : d(data) {}
+    unsigned get(int n) {
+        unsigned v = 0;
+        for (int i = 0; i < n; i++) {
+            size_t byte = bit >> 3;
+            if (byte >= d.size()) return 0;
+            v = (v << 1) | ((unsigned char)d[byte] >> (7 - (bit & 7)) & 1u);
+            bit++;
+        }
+        return v;
+    }
+    size_t usedBits() const { return bit; }
+    size_t totalBits() const { return d.size() * 8; }
+};
+
+static double decodeComponent(unsigned raw, int bits, double lo, double hi) {
+    if (bits <= 0) return lo;
+    double maxv = (double)((1u << bits) - 1);
+    return lo + (hi - lo) * ((double)raw / maxv);
+}
+
+void Interp::paintMeshShading(ObjP sh, int type, int ncomp, GState& gs) {
+    if (type == 6 || type == 7) { st->note("mesh shading type " + std::to_string(type)); return; }
+
+    int bpc = (int)num(doc->resolve(sh->get("BitsPerCoordinate")), 0);
+    int bcc = (int)num(doc->resolve(sh->get("BitsPerComponent")), 8);
+    if (bpc < 1 || bpc > 32 || bcc < 1 || bcc > 16) { st->note("mesh bit depth"); return; }
+
+    ObjP dec = doc->resolve(sh->get("Decode"));
+    if (!dec || (int)dec->arr.size() < 4 + 2 * ncomp) { st->note("mesh decode"); return; }
+    double dx0 = num(doc->resolve(dec->arr[0]), 0), dx1 = num(doc->resolve(dec->arr[1]), 1);
+    double dy0 = num(doc->resolve(dec->arr[2]), 0), dy1 = num(doc->resolve(dec->arr[3]), 1);
+    std::vector<double> clo(ncomp), chi(ncomp);
+    for (int c = 0; c < ncomp; c++) {
+        clo[c] = num(doc->resolve(dec->arr[4 + 2 * c]), 0);
+        chi[c] = num(doc->resolve(dec->arr[5 + 2 * c]), 1);
+    }
+
+    std::string data;
+    if (!doc->decodeStream(sh, data)) { st->note("mesh stream"); return; }
+    BitReader br(data);
+
+    struct V { double x, y; float c[4]; };
+    auto readVertex = [&](V& v, bool withFlag, unsigned& flag) {
+        if (withFlag) flag = br.get(1);
+        double ux = decodeComponent(br.get(bpc), bpc, dx0, dx1);
+        double uy = decodeComponent(br.get(bpc), bpc, dy0, dy1);
+        gs.ctm.apply(ux, uy, v.x, v.y);
+        for (int c = 0; c < ncomp; c++)
+            v.c[c] = (float)decodeComponent(br.get(bcc), bcc, clo[c], chi[c]);
+    };
+
+    static const double sub[4][2] = {{0.25, 0.25}, {0.75, 0.25}, {0.25, 0.75}, {0.75, 0.75}};
+    int drawn = 0;
+
+    auto fillTriangle = [&](const V& a, const V& b, const V& c) {
+        double minx = std::min(a.x, std::min(b.x, c.x)), maxx = std::max(a.x, std::max(b.x, c.x));
+        double miny = std::min(a.y, std::min(b.y, c.y)), maxy = std::max(a.y, std::max(b.y, c.y));
+        int x0 = std::max(0, (int)std::floor(minx)), x1 = std::min(cv->w, (int)std::ceil(maxx));
+        int y0 = std::max(0, (int)std::floor(miny)), y1 = std::min(cv->h, (int)std::ceil(maxy));
+        double det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+        if (fabs(det) < 1e-9) return;
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++) {
+                float cov = 0.f, acc[4] = {0, 0, 0, 0};
+                for (auto& o : sub) {
+                    double px = x + o[0], py = y + o[1];
+                    double l1 = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / det;
+                    double l2 = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / det;
+                    double l3 = 1.0 - l1 - l2;
+                    if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) continue;
+                    cov += 0.25f;
+                    for (int k = 0; k < 4; k++)
+                        acc[k] += (float)(l1 * a.c[k] + l2 * b.c[k] + l3 * c.c[k]) * 0.25f;
+                }
+                if (cov <= 0.002f) continue;
+                float a2 = cov * gs.fillA;
+                if (gs.clip) a2 *= (*gs.clip)[(size_t)y * cv->w + x] * (1.f / 255.f);
+                if (a2 <= 0.f) continue;
+                float r, g, b2;
+                if (ncomp == 1) { r = g = b2 = acc[0]; }
+                else if (ncomp == 4) { float rgb3[3]; cmykToRgb(acc[0], acc[1], acc[2], acc[3], rgb3); r = rgb3[0]; g = rgb3[1]; b2 = rgb3[2]; }
+                else { r = acc[0]; g = ncomp > 1 ? acc[1] : acc[0]; b2 = ncomp > 2 ? acc[2] : acc[0]; }
+                cv->blend(x, y, r, g, b2, a2, gs.bm);
+            }
+        }
+        drawn++;
+    };
+
+    if (type == 4) {
+        while (br.usedBits() + (size_t)(8 + 3 * (bpc * 2 + bcc * ncomp)) <= br.totalBits()) {
+            V tri[3];
+            for (int i = 0; i < 3; i++) { unsigned flag = 0; readVertex(tri[i], false, flag); }
+            fillTriangle(tri[0], tri[1], tri[2]);
+        }
+    } else if (type == 5) {
+        int perRow = (int)num(doc->resolve(sh->get("VerticesPerRow")), 0);
+        if (perRow < 2) { st->note("mesh lattice"); return; }
+        std::vector<V> verts;
+        while (br.usedBits() + (size_t)(1 + bpc * 2 + bcc * ncomp) <= br.totalBits()) {
+            V v; unsigned flag = 0; readVertex(v, true, flag);
+            verts.push_back(v);
+        }
+        int rows = (int)verts.size() / perRow;
+        for (int r = 0; r + 1 < rows; r++)
+            for (int c = 0; c + 1 < perRow; c++) {
+                const V& v00 = verts[r * perRow + c];
+                const V& v01 = verts[r * perRow + c + 1];
+                const V& v10 = verts[(r + 1) * perRow + c];
+                const V& v11 = verts[(r + 1) * perRow + c + 1];
+                fillTriangle(v00, v01, v11);
+                fillTriangle(v00, v11, v10);
+            }
+    }
+    if (drawn) st->fills++;
+}
+
 void Interp::paintShadingObj(ObjP sh, GState& gs) {
     int type = (int)num(doc->resolve(sh->get("ShadingType")), 0);
-    if (type != 2 && type != 3) { st->note("shading type " + std::to_string(type)); return; }
+    if (type != 2 && type != 3) {
+        // mesh and function shadings need their own colour decoding path, so
+        // they are dispatched before the axial/radial setup below.
+        int ncomp = 3;
+        ObjP cs0 = doc->resolve(sh->get("ColorSpace"));
+        if (cs0) {
+            if (cs0->t == O_NAME) {
+                if (cs0->str == "DeviceGray") ncomp = 1;
+                else if (cs0->str == "DeviceCMYK") ncomp = 4;
+            } else if (cs0->t == O_ARR && !cs0->arr.empty()) {
+                std::string fam = objName(doc->resolve(cs0->arr[0]));
+                if (fam == "ICCBased" && cs0->arr.size() > 1) {
+                    ObjP stm = doc->resolve(cs0->arr[1]);
+                    if (stm) ncomp = (int)num(doc->resolve(stm->get("N")), 3);
+                }
+            }
+        }
+        if (type >= 4 && type <= 7) { paintMeshShading(sh, type, ncomp, gs); return; }
+        st->note("shading type " + std::to_string(type));
+        return;
+    }
 
     // colour components from the shading's colour space
     int ncomp = 3;
