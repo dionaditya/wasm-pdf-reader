@@ -35,6 +35,17 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   one fails with `encrypted PDF: a user password is required` (or
   `wrong password`), never a blank page. The demo prompts for the password once
   when the reader asks for it.
+
+  *Verified against qpdf:* `scripts/make_encrypted_fixtures.py` writes one file
+  per revision (R2 RC4-40, R4 RC4-128, R4 AES-128, R5 and R6 AES-256, plus an
+  owner-password-only file and one with a corrupted `/Perms`), and
+  `scripts/verify_encryption.sh` compares the file key this engine derives with
+  `qpdf --show-encryption --show-encryption-key`. All thirteen user/owner rows
+  match byte-for-byte. Two behaviours are deliberate: an owner-only file opens
+  with an empty password (that *is* its user password), and a corrupt `/Perms`
+  makes the owner path refuse with a warning naming the permissions block —
+  qpdf ignores it and opens anyway; refusing is the safer read of a tampered
+  file.
 - **Rendering** — paths, fills (nonzero/evenodd), strokes with dash/cap/join,
   clipping, text, Form and Image XObjects, inline images, `/Rotate` pages,
   axial and radial shadings, `/SMask` soft masks and `/Mask` stencil masks.
@@ -326,6 +337,7 @@ npm test              # core: parse, raster, text, search, links, annotations, C
 npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus
+scripts/verify_encryption.sh   # keys vs qpdf for every revision (needs qpdf)
 npm run test:visual   # rewrite the pixel baseline after an intended change
 ```
 

@@ -890,14 +890,23 @@ bool Document::setupEncryption(const ObjP& enc)
         if (U.size() < 48 || O.size() < 48) { warn("AES-256 U/O entry short"); return false; }
         // Algorithm 2.B. The owner entry hashes over the 48-byte /U as well,
         // which is why an owner password never validates without it.
-        auto hash2B = [](const std::string& password, const std::string& salt,
-                         const std::string& udata, int rev) {
+        auto hash2B = [this](const std::string& password, const std::string& salt,
+                             const std::string& udata, int rev) {
             std::string K = pdfcrypto::sha256(password + salt + udata);
-            for (int i = 0; ; ++i) {
-                std::string K1;
+            if (rev == 5) return K;          // R5 is one SHA-256, no AES rounds
+            // Algorithm 2.B: 64 rounds unconditionally, then keep going until
+            // the last byte of the previous E is <= rounds - 32. The condition
+            // looks at the *previous* round's E, and the threshold moves with
+            // the round counter — getting either wrong yields a key that works
+            // for some files and not others, which is the worst failure mode.
+            std::string E;
+            int rounds = 0;
+            for (int i = 0; i < 64 || (!E.empty() && (int)(unsigned char)E.back() > i - 32); ++i) {
                 std::string block = password + K + udata;
+                std::string K1;
+                K1.reserve(block.size() * 64);
                 for (int r = 0; r < 64; r++) K1 += block;
-                std::string E = pdfcrypto::aesCbcEncrypt(K.substr(0, 16), K.substr(16, 16), K1);
+                E = pdfcrypto::aesCbcEncrypt(K.substr(0, 16), K.substr(16, 16), K1);
                 int sum = 0;
                 for (int b = 0; b < 16; b++) sum += (unsigned char)E[b];
                 switch (sum % 3) {
@@ -905,9 +914,12 @@ bool Document::setupEncryption(const ObjP& enc)
                     case 1:  K = pdfcrypto::sha384(E); break;
                     default: K = pdfcrypto::sha512(E); break;
                 }
-                if (rev == 5) break;                     // R5 uses a single round
-                if (i >= 63 && (unsigned char)E.back() <= i - 32) break;
+                rounds = i + 1;
+                if (rounds > 4096) break;    // a hostile file cannot loop us forever
             }
+            if (std::getenv("WPDF_ENC_DEBUG"))
+                warn("enc: hash2B rounds=" + std::to_string(rounds) +
+                     " lastE=" + std::to_string((int)(unsigned char)E.back()));
             return K.substr(0, 32);
         };
         auto hashFor = [&](const std::string& salt, const std::string& udata) {
@@ -926,7 +938,22 @@ bool Document::setupEncryption(const ObjP& enc)
         }
 
         // 2. …or the owner password, which unwraps /OE and is proven by /Perms
-        if (hashFor(O.substr(32, 8), U).compare(0, 32, O, 0, 32) == 0) {
+        const std::string ownerHash = hashFor(O.substr(32, 8), U);
+        if (std::getenv("WPDF_ENC_DEBUG")) {
+            auto hex = [](const std::string& s, size_t n) {
+                std::string h;
+                char b[3];
+                for (size_t i = 0; i < n && i < s.size(); i++) {
+                    std::snprintf(b, sizeof b, "%02x", (unsigned char)s[i]);
+                    h += b;
+                }
+                return h;
+            };
+            warn("enc: userHash=" + hex(hashFor(U.substr(32, 8), ""), 8) +
+                 " U=" + hex(U, 8) +
+                 " ownerHash=" + hex(ownerHash, 8) + " O=" + hex(O, 8));
+        }
+        if (ownerHash.compare(0, 32, O, 0, 32) == 0) {
             ObjP oeObj = resolve(enc->get("OE"));
             if (oeObj && oeObj->str.size() >= 32) {
                 std::string intermediate = hashFor(O.substr(40, 8), U);
@@ -941,6 +968,10 @@ bool Document::setupEncryption(const ObjP& enc)
                     encKey = fk; encN = 32; aesStreams = true; encDirectKey = true; encrypted = true;
                     return true;
                 }
+                // /Perms is the only proof that an owner key is the right one; a
+                // wrong key decrypts to noise. Say which check failed — "wrong
+                // password" for a corrupt /Perms sends people hunting the wrong bug.
+                warn("AES-256: owner key rejected by /Perms (corrupt or tampered permissions block)");
             }
         }
         error = wrongPw;

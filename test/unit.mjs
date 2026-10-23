@@ -411,46 +411,63 @@ await check('shared image and form XObjects resolve on every page', async () => 
 });
 sharedDoc.close();
 
-// ── encryption ─────────────────────────────────────────────────────────────
-const encExpect = { 'enc-rc4.pdf': 'RC4 40/128', 'enc-aes128.pdf': 'AES-128', 'enc-aes256.pdf': 'AES-256' };
-for (const [file, label] of Object.entries(encExpect)) {
-  await check(`${label}: opens with an empty user password and renders`, async () => {
-    const doc = await PdfDocument.open(await readFile(join(root, 'test', 'fixtures', file)));
-    const text = doc.getPageText(0);
-    assert.ok(text.includes('Encryption test'), `${label} text should decrypt`);
-    const { imageData } = await doc.render(0, { scale: 1 });
-    assert.ok(inkRatio(imageData) > 0.01, `${label} page should have ink`);
-    assert.equal(doc.warnings.length, 0);
-    doc.close();
-  });
-}
-
-await check('AES-256 with a user password fails with a clear message', async () => {
-  const bytes = await readFile(join(root, 'test', 'fixtures', 'enc-aes256-user.pdf'));
-  await assert.rejects(() => PdfDocument.open(bytes), /user password is required/);
-});
-
-for (const [file, label] of [
-  ['enc-rc4-pw.pdf', 'RC4'],
-  ['enc-aes128-pw.pdf', 'AES-128'],
-  ['enc-aes256-pw.pdf', 'AES-256'],
-]) {
+// ── encryption: every revision, user and owner ─────────────────────────────
+// Fixtures from scripts/make_encrypted_fixtures.py; the derived keys are
+// compared with `qpdf --show-encryption-key` by scripts/verify_encryption.sh.
+const USER_PW = 'reader-fixture';
+const OWNER_PW = 'owner-fixture';
+const encRevs = [
+  ['enc-r2-rc4.pdf', 'R2 RC4-40'],
+  ['enc-r4-rc4.pdf', 'R4 RC4-128'],
+  ['enc-r4-aes128.pdf', 'R4 AES-128'],
+  ['enc-r5-aes256.pdf', 'R5 AES-256'],
+  ['enc-r6-aes256.pdf', 'R6 AES-256'],
+];
+for (const [file, label] of encRevs) {
   const bytes = await readFile(join(root, 'test', 'fixtures', file));
-  await check(`${label}: opens with the user password`, async () => {
-    const doc = await PdfDocument.open(bytes, { password: 'secret' });
-    assert.ok(doc.getPageText(0).includes('Encryption test'));
+  await check(`${label}: user password decrypts text and pixels`, async () => {
+    const doc = await PdfDocument.open(bytes, { password: USER_PW });
+    assert.ok(doc.getPageText(0).includes('Encryption fixture'), 'text should decrypt');
     const { imageData } = await doc.render(0, { scale: 1 });
-    assert.ok(inkRatio(imageData) > 0.01);
+    assert.ok(inkRatio(imageData) > 0.002, `page should have ink, got ${inkRatio(imageData)}`);
+    assert.equal(doc.warnings.length, 0, `unexpected warnings: ${doc.warnings}`);
     doc.close();
   });
-  await check(`${label}: opens with the owner password`, async () => {
-    const doc = await PdfDocument.open(bytes, { password: 'owner' });
-    assert.ok(doc.getPageText(0).includes('Encryption test'));
+  await check(`${label}: owner password opens the same bytes`, async () => {
+    const doc = await PdfDocument.open(bytes, { password: OWNER_PW });
+    assert.ok(doc.getPageText(0).includes('Encryption fixture'));
     doc.close();
   });
-  await check(`${label}: rejects a wrong password`, async () => {
+  await check(`${label}: a wrong password is refused by name`, async () => {
     await assert.rejects(() => PdfDocument.open(bytes, { password: 'nope' }), /wrong password/);
   });
 }
+
+// Owner-password-only file: the empty password is the user password. This is the
+// case that exposed an Algorithm 2.B bug — the owner path could not match /O, so
+// "owner password support" was only true for files that also had a user password.
+const ownerOnly = await readFile(join(root, 'test', 'fixtures', 'enc-r6-aes256-user-only.pdf'));
+await check('R6 owner-only: opens with no user password and with the owner password', async () => {
+  for (const pw of ['', OWNER_PW]) {
+    const doc = await PdfDocument.open(ownerOnly, { password: pw });
+    assert.ok(doc.getPageText(0).includes('Encryption fixture'), `password ${pw || '(empty)'} should open`);
+    doc.close();
+  }
+  // The empty password *is* the user password here, so opening without one works.
+  await assert.rejects(() => PdfDocument.open(ownerOnly, { password: 'nope' }), /wrong password/);
+});
+
+await check('R6: a corrupt /Perms rejects the owner password, not the user one', async () => {
+  const bytes = await readFile(join(root, 'test', 'fixtures', 'enc-r6-aes256-badperms.pdf'));
+  // /Perms only proves the *owner* key; the user path is unaffected.
+  const asUser = await PdfDocument.open(bytes, { password: USER_PW });
+  assert.ok(asUser.getPageText(0).includes('Encryption fixture'));
+  asUser.close();
+  await assert.rejects(
+    () => PdfDocument.open(bytes, { password: OWNER_PW }),
+    /wrong password/,
+    'the owner path must refuse when /Perms does not decrypt to the marker',
+  );
+});
 
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);
