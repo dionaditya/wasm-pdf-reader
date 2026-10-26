@@ -40,6 +40,7 @@ if (!existsSync(join(root, 'examples', 'react', 'bundle.js'))) {
 await rm(out, { recursive: true, force: true });
 await mkdir(join(out, 'vanilla'), { recursive: true });
 await mkdir(join(out, 'react'), { recursive: true });
+await mkdir(join(out, 'ranged'), { recursive: true });
 
 await cp(join(root, 'dist'), join(out, 'dist'), { recursive: true });
 await cp(join(root, 'test', 'fixtures', 'reader-sample.pdf'), join(out, 'reader-sample.pdf'));
@@ -47,6 +48,7 @@ await cp(join(root, 'test', 'fixtures', 'reader-sample.pdf'), join(out, 'reader-
 await writeFile(join(out, 'vanilla', 'index.html'), rewrite(await readFile(join(root, 'examples', 'vanilla', 'index.html'), 'utf8')));
 await writeFile(join(out, 'react', 'index.html'), rewrite(await readFile(join(root, 'examples', 'react', 'index.html'), 'utf8')));
 await writeFile(join(out, 'react', 'bundle.js'), rewrite(await readFile(join(root, 'examples', 'react', 'bundle.js'), 'utf8')));
+await writeFile(join(out, 'ranged', 'index.html'), rewrite(await readFile(join(root, 'examples', 'ranged', 'index.html'), 'utf8')));
 
 await writeFile(join(out, 'index.html'), `<!doctype html>
 <html lang="en">
@@ -88,6 +90,7 @@ await writeFile(join(out, 'index.html'), `<!doctype html>
   <div class="cards">
     <a class="card" href="./vanilla/"><strong>Vanilla JS →</strong><small>mountPdfReader(el, options)</small></a>
     <a class="card" href="./react/"><strong>React →</strong><small>&lt;PdfReader /&gt; with a custom toolbar</small></a>
+    <a class="card" href="./ranged/"><strong>Ranged loading →</strong><small>parse straight out of HTTP Range requests</small></a>
   </div>
   <pre>npm install wasm-pdf-reader
 import { PdfDocument } from 'wasm-pdf-reader';

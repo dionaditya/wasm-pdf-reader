@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wasm-pdf-reader — ranged loading</title>
+<link rel="stylesheet" href="/dist/styles.css">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b0f19; color: #e8ecf4;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header { padding: 12px 16px; background: #111827; border-bottom: 1px solid #1f2937; }
+  header h1 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
+  header h1 span { color: #7dd3fc; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type="text"], input[type="number"] {
+    font: inherit; font-size: 13px; color: #e5e7eb; background: #0b1220;
+    border: 1px solid #334155; border-radius: 6px; padding: 6px 10px;
+  }
+  #url { flex: 1 1 380px; min-width: 240px; }
+  #size { width: 130px; }
+  button {
+    font: inherit; font-size: 13px; color: #e5e7eb; background: #1f2937;
+    border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { background: #273449; }
+  button:disabled { opacity: .5; cursor: default; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #view { flex: 1; overflow: auto; padding: 20px; display: flex; justify-content: center; align-items: flex-start; }
+  aside {
+    width: 340px; padding: 16px; background: #0f172a; border-left: 1px solid #1f2937;
+    font-size: 12.5px; overflow: auto;
+  }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 18px; }
+  td { padding: 3px 0; vertical-align: top; }
+  td:first-child { color: #94a3b8; padding-right: 8px; white-space: nowrap; }
+  td:last-child { font-variant-numeric: tabular-nums; }
+  .ok { color: #6ee7b7; }
+  .warn { color: #fbbf24; }
+  .err { color: #f87171; white-space: pre-wrap; }
+  canvas { background: #fff; box-shadow: 0 10px 30px rgba(0,0,0,.55); border-radius: 4px; max-width: 100%; height: auto; }
+  .hint { color: #64748b; }
+  code { background: #0b1220; border: 1px solid #1f2937; border-radius: 4px; padding: 1px 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>wasm-pdf-reader <span>· ranged loading</span></h1>
+  <form id="form">
+    <input id="url" type="text" spellcheck="false" aria-label="Document URL">
+    <input id="size" type="number" min="1" step="1" placeholder="size in bytes" aria-label="File size in bytes">
+    <button type="submit" id="open">Open over Range requests</button>
+  </form>
+</header>
+
+<main>
+  <div id="view"><p class="hint">Point this at a PDF that supports <code>Range</code> requests. The file is never copied into wasm — the worker pulls only the byte ranges the parser asks for.</p></div>
+  <aside>
+    <h2>What the engine did</h2>
+    <table>
+      <tr><td>mode</td><td id="mode">—</td></tr>
+      <tr><td>ranged</td><td id="ranged">—</td></tr>
+      <tr><td>pages</td><td id="pages">—</td></tr>
+      <tr><td>file size</td><td id="file">—</td></tr>
+      <tr><td>fetched</td><td id="fetched">—</td></tr>
+      <tr><td>range requests</td><td id="requests">—</td></tr>
+      <tr><td>of the file</td><td id="percent">—</td></tr>
+      <tr><td>wasm heap</td><td id="heap">—</td></tr>
+      <tr><td>open</td><td id="openMs">—</td></tr>
+      <tr><td>page 1</td><td id="renderMs">—</td></tr>
+      <tr><td>server</td><td id="server">—</td></tr>
+    </table>
+    <p class="hint" id="note"></p>
+  </aside>
+</main>
+
+<script type="module">
+import { PdfDocument } from '/dist/index.js';
+
+// This page is published under /wasm-pdf-reader/ranged/ and served from the repo
+// root locally; keep the default working in both.
+const onSite = !location.pathname.startsWith('/examples/');
+const input = document.getElementById('url');
+const sizeInput = document.getElementById('size');
+input.value = onSite ? '../reader-sample.pdf' : '/test/fixtures/reader-sample.pdf';
+
+const el = (id) => document.getElementById(id);
+const set = (id, text, cls) => { el(id).textContent = text; if (cls) el(id).className = cls; };
+
+function bytes(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(2)} MB`;
+}
+
+/** Ask the server how big the file is, so the caller does not have to know. */
+async function probe(url) {
+  const res = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+  if (!res.ok) throw new Error(`HEAD ${res.status}`);
+  const len = Number(res.headers.get('content-length'));
+  const ranges = (res.headers.get('accept-ranges') || '').toLowerCase();
+  return { size: len, acceptRanges: ranges.includes('bytes') };
+}
+
+let doc = null;
+
+document.getElementById('form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const url = input.value.trim();
+  if (!url) return;
+  document.getElementById('open').disabled = true;
+  set('mode', '…');
+  try {
+    let size = Number(sizeInput.value) || 0;
+    let acceptRanges = null;
+    if (!size) {
+      const head = await probe(url);
+      size = head.size;
+      acceptRanges = head.acceptRanges;
+      sizeInput.value = String(size);
+    }
+    if (!size) throw new Error('cannot determine the file size — set it by hand');
+    set('server', acceptRanges === false ? 'accept-ranges missing (will fall back)' : 'accept-ranges: bytes',
+        acceptRanges === false ? 'warn' : 'ok');
+
+    doc?.close();
+    const t0 = performance.now();
+    doc = await PdfDocument.open({ url, size }, { worker: true });
+    const openMs = performance.now() - t0;
+
+    const out = await doc.render(0, { scale: 1.2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = out.width;
+    canvas.height = out.height;
+    canvas.getContext('2d').putImageData(out.imageData, 0, 0);
+    const view = document.getElementById('view');
+    view.replaceChildren(canvas);
+
+    const stats = await doc.stats();
+    const fetched = stats.source ? stats.source.fetched : 0;
+    set('mode', doc.mode, doc.mode === 'worker' ? 'ok' : 'err');
+    set('ranged', String(doc.ranged), doc.ranged ? 'ok' : 'err');
+    set('pages', String(doc.pageCount));
+    set('file', bytes(size));
+    set('fetched', bytes(fetched));
+    set('requests', String(stats.source ? stats.source.fetches : 0));
+    set('percent', `${((fetched / size) * 100).toFixed(2)} % of the file`);
+    set('heap', bytes(stats.heapBytes));
+    set('openMs', `${Math.round(openMs)} ms`);
+    set('renderMs', `${Math.round(performance.now() - t0 - openMs)} ms incl. open`);
+
+    const note = el('note');
+    if (!doc.ranged) {
+      note.textContent = 'Not ranged: the document was copied into wasm. Check that the build ships openRanged support.';
+      note.className = 'hint err';
+    } else if (fetched >= size) {
+      note.textContent = 'The whole file was read — probably because the server ignored Range, or the document needs every byte for page 1.';
+      note.className = 'hint warn';
+    } else {
+      note.textContent = 'The engine read a fraction of the file. Try a big document: npm run fixture:large && npm run serve, then open this page at http://localhost:5177/examples/ranged/.';
+      note.className = 'hint';
+    }
+  } catch (err) {
+    set('mode', 'error');
+    const view = document.getElementById('view');
+    const p = document.createElement('p');
+    p.className = 'err';
+    p.textContent = String(err && err.message ? err.message : err);
+    view.replaceChildren(p);
+    el('note').textContent = 'Ranged loading needs { worker: true }, a same-origin URL that answers Range, and the file size.';
+    el('note').className = 'hint';
+  } finally {
+    document.getElementById('open').disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -7,7 +7,8 @@ can drive.
 
 Packaged as `@dionaditya/wasm-pdf-reader`. Try it without installing anything:
 [vanilla demo](https://dionaditya.github.io/wasm-pdf-reader/vanilla/) ·
-[React demo](https://dionaditya.github.io/wasm-pdf-reader/react/).
+[React demo](https://dionaditya.github.io/wasm-pdf-reader/react/) ·
+[ranged-loading demo](https://dionaditya.github.io/wasm-pdf-reader/ranged/).
 
 ![The vanilla viewer showing the generated sample](docs/screenshots/vanilla.png)
 
