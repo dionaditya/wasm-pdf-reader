@@ -354,11 +354,51 @@ still only grows (one process, many documents → recycle the worker/process), a
 `file:` handling goes through a dynamic `node:fs` import, so bundling for a
 browser needs the `node:module` external noted above.
 
-## Web workers
+## Web worker mode
 
-There is **no built-in worker yet** (ROADMAP M9). The module owns one render
-bitmap and serialises renders, so the supported pattern is one `PdfDocument` per
-worker, messages carrying `ArrayBuffer`s you transfer in:
+Built in since 0.3.0 (M9.1): pass `worker: true` and the parse and every render
+happen in a worker. The main thread only does `putImageData` on pixels that come
+back transferred.
+
+```js
+const doc = await PdfDocument.open(file, {
+  worker: true,
+  wasmUrl: '/pkg/pdf-reader.wasm',   // still the main-thread copy: the worker fetches it too
+  workerUrl: '/pkg/worker.js',       // REQUIRED when the library is bundled
+});
+await doc.renderToCanvas(canvas, 0, { scale: 1.5 });
+const hits = await doc.search('total');        // Promise in worker mode
+doc.close();                                   // terminates the worker when it is the last doc
+```
+
+Three things a host must know:
+
+- **`workerUrl` in a bundle.** The default is `new URL('./worker.js',
+  import.meta.url)`, which in an unbundled page resolves next to `dist/document.js`
+  and is correct. In a bundle (Vite, esbuild, webpack) `import.meta.url` is the
+  *page*, so set `workerUrl` explicitly, or copy `dist/worker.js`, `dist/remote.js`
+  and `dist/wasm/` into your public directory and point at them. A 404 here falls
+  back to the inline path — check `doc.mode === 'worker'` in CI, not by eye.
+- **CSP:** `worker-src 'self'` (plus `blob:` only if you build the worker URL from
+  a blob), and the worker itself needs `script-src 'self' 'wasm-unsafe-eval'` for
+  `WebAssembly.compile`.
+- **One worker per pool, reused across documents.** Opening a second file while
+  the first is open shares the module; closing the last document terminates the
+  worker, so a serial open/close cycle recompiles the wasm each time (~50 ms).
+  Keep documents open if you switch between them.
+
+The synchronous part of the API survives because geometry, metadata, the outline,
+form fields and warnings are captured at open time. `getText()`/`getLinks()` are
+warm for a page that has been rendered; use `await loadText(i)` /
+`getPageText(i)` for a page that has not. `{ worker: 'strict' }` throws instead
+of falling back.
+
+### Rolling your own worker
+
+If you need OffscreenCanvas, a different scheduling policy, or your own message
+protocol, the module is still a normal library inside a worker — the module owns
+one render bitmap and serialises renders, so use one `PdfDocument` per worker and
+transfer the `ArrayBuffer`s in:
 
 ```js
 // pdf.worker.js
@@ -376,9 +416,8 @@ self.onmessage = async ({ data }) => {
 };
 ```
 
-Then paint into an `OffscreenCanvas` in the worker (or a `BitmapImage` transfer) to
-keep the main thread empty. This is a host-side workaround, not an API: the viewer
-still parses on the calling thread.
+Then paint into an `OffscreenCanvas` in the worker (or transfer the buffer back
+and `putImageData` on the main thread).
 
 ## Serving the documents themselves
 

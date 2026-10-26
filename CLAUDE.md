@@ -35,8 +35,8 @@ npm run build:js                # src/js -> dist/, JSX -> JS for React
 node examples/build-react.mjs
 
 # Tests
-node test/unit.mjs              # 62 checks, no browser, ~seconds
-node test/e2e.mjs               # 14 steps in headless Chrome (see §3)
+node test/unit.mjs              # 67 checks, no browser, ~seconds
+node test/e2e.mjs              # 17 steps in headless Chrome (see §3)
 node --expose-gc test/memory.mjs
 node test/pages.mjs             # builds _site and serves it under /wasm-pdf-reader/
 scripts/verify_encryption.sh    # needs qpdf; diffs derived keys per revision
@@ -183,7 +183,9 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 
 | file | what it is |
 |---|---|
-| `document.js` (440 lines) | `PdfDocument`: the public class. Copies the source bytes into wasm (`copyIntoWasm` handles ArrayBuffer/TypedArray/Blob/File/URL/Response), wraps every `_wpdf_*` call, parses JSON payloads, exposes `pageCount`, `metadata`, `warnings`, `outline`, `form`, `render`, `renderToCanvas`, `getText`, `search`, `getLinks`, `boxToCss`, `setField`, `close`. Renders are serialised (one bitmap). |
+| `document.js` (~480 lines) | `PdfDocument`: the public class. Copies the source bytes into wasm (`copyIntoWasm` handles ArrayBuffer/TypedArray/Blob/File/URL/Response), wraps every `_wpdf_*` call, parses JSON payloads, exposes `pageCount`, `metadata`, `warnings`, `outline`, `form`, `render`, `renderToCanvas`, `getText`, `search`, `getLinks`, `boxToCss`, `setField`, `close`. Renders are serialised (one bitmap). |
+| `remote.js` | Worker mode's main-thread half: `PdfRemoteDocument` (same surface as `PdfDocument`, sync geometry/metadata from the open-time summary, text+links pre-warmed by the render, Promises for `search`/`getPageText`) and the `WorkerPool`. Falls back to inline and records `workerError` when no worker can start. |
+| `worker.js` | The worker entry: one wasm module per worker (single bitmap → one queue), request/response by message id, announces `{op:'ready'}` so a 404 is a fallback instead of a hang, transfers the RGBA buffer back with the page's text and links. |
 | `loader.js` | Module instantiation: one shared instance per page, `wasmUrl`/`wasmBinary`/`module` escape hatches, cache-busted fetch, one retry on `LinkError`, `resetModule()`. |
 | `mount.js` (900 lines) | The framework-free viewer: toolbar, page rail with lazy thumbnails, continuous mode (IntersectionObserver), text layer, link layer, search highlights, selection painting, print (rasterizes to a detached sheet), theme, keyboard/wheel handlers. Returns a controller (`goToPage`, `setScale`, `zoomIn/Out`, `fitWidth/Page`, `setFile`, `search`, `setThumbnails`, `setContinuous`, `print`, `rerender`, `destroy`). |
 | `text.js` | Text layer helpers: `groupLines` (runs → lines/blocks), `itemsToText` (copy semantics: `<br>`, 0.14 em space rule), `searchItems`, `boxToCss` (PDF y-up → CSS). |
@@ -200,7 +202,7 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 
 | file | what it is |
 |---|---|
-| `unit.mjs` (616 lines, 62 checks) | The real contract: opens every fixture, asserts page counts, ink in regions, colours, text, links, encryption, CMaps, OCG, forms, patterns, shadings, JBIG2, memory shape. Add one assertion per feature. |
+| `unit.mjs` (660 lines, 67 checks) | The real contract: opens every fixture, asserts page counts, ink in regions, colours, text, links, encryption, CMaps, OCG, forms, patterns, shadings, JBIG2, memory shape. Add one assertion per feature. |
 | `e2e.mjs` | Browser suite, §3. Also writes the README screenshots. |
 | `cdp.mjs` | Dependency-free Chrome DevTools Protocol client + launcher. |
 | `pages.mjs` | Builds `_site/` and serves it under `/wasm-pdf-reader/` to catch root-absolute path bugs before Pages does. |
@@ -270,6 +272,24 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
   and do not vertically centre the page stack (`justify-content: flex-start`).
 - **Fit-width can run away** if the viewport is a flex item — clamp to ~98 % of the
   window width and set `min-width: 0`.
+- **Worker mode keeps the sync API by snapshot.** `PdfRemoteDocument` captures
+  page count, every page's geometry, metadata, outline, form fields and warnings
+  at open; `getText`/`getLinks` are filled by the *render response* for that page,
+  so a page that was never rendered returns `[]` (use `loadText`/`getPageText`).
+  `search()` and `setField()` are Promises there — anything that calls them
+  synchronously works inline and silently breaks threaded.
+- **A worker fallback must be observable.** `document.mode` is `'worker'` or
+  `'inline'`, and a fallback records `document.workerError` (plus a
+  `wpdf-worker-fallback` event). A silent fallback let every worker assertion
+  pass while nothing was threaded: the React demo resolves `workerUrl` against
+  the *page*, so a bundle needs `workerUrl="/dist/worker.js"` and `build-demo.mjs`
+  rewrites it.
+- **Cyclic structure must be visited-set-guarded, not depth-guarded.** A `/Kids`,
+  `/First` or `/Next` pointing back up its own tree made `document.outline` hang
+  and inflated a 1-page file to 40 pages (the wasm stack has no guard page, so
+  runaway recursion loops instead of trapping). Parser walk, outline page index,
+  outline walk and the form builder each carry a `std::set<const Obj*>` now;
+  `test/fixtures/outline-cycle.pdf` is the regression.
 
 ## 6. Finishing a milestone (definition of done)
 
@@ -283,7 +303,7 @@ For `M{N}` in `ROADMAP.md`:
 4. `node test/e2e.mjs` green; refresh `test/baseline/visual.json` only if the
    change is intended, and say so in the commit.
 5. `README.md`: capability bullet + the "not supported" paragraph + the *Limits*
-   section if a ceiling moved. Re-measure counts (`62 checks`, `14 e2e steps`,
+   section if a ceiling moved. Re-measure counts (`67 checks`, `17 e2e steps`,
    `ls -l dist/wasm/`) — do not copy the previous README, it accumulates stale
    claims.
 6. `ROADMAP.md`: mark the milestone, record what landed and what did not, keep the

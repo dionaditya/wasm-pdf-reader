@@ -56,13 +56,27 @@ export function PdfPage(props) {
   const textRef = useRef(null);
   useEffect(() => {
     const host = textRef.current;
-    if (!host) return;
+    if (!host) return undefined;
     host.replaceChildren();
-    if (!doc || textLayer === false) return;
+    if (!doc || textLayer === false) return undefined;
     const size = doc.getPageSize(page);
-    host.appendChild(buildTextLayer(doc.getText(page), {
-      scale, height: size.height, boxY0: size.boxY0,
-    }));
+    const paint = (items) => {
+      if (!items || !items.length) return;
+      host.replaceChildren(buildTextLayer(items, {
+        scale, height: size.height, boxY0: size.boxY0,
+      }));
+    };
+    // A worker-backed document fills its text cache with the render that drew
+    // the page, so this is usually immediate; loadText covers the case where
+    // this effect runs first (mount, or a cached bitmap).
+    let alive = true;
+    let sync = null;
+    try { sync = doc.getText(page); } catch { sync = null; }
+    if (sync && sync.length) paint(sync);
+    else if (typeof doc.loadText === 'function') {
+      doc.loadText(page).then((items) => { if (alive) paint(items); }).catch(() => {});
+    }
+    return () => { alive = false; };
   }, [doc, page, scale, textLayer, width, height]);
 
   const reported = useRef(null);

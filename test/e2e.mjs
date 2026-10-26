@@ -107,6 +107,53 @@ try {
     assert.equal(ready.pageCount, expectations.pages);
   });
 
+  await step('rendering runs in a worker, with no wasm instance on the main thread', async () => {
+    const info = await page.eval(`(() => {
+      const doc = window.viewer.document;
+      return {
+        mode: doc.mode,
+        isWorker: doc.isWorker,
+        hasModule: typeof doc.Module !== 'undefined',
+        workerError: doc.workerError ? String(doc.workerError.message) : null,
+      };
+    })()`);
+    assert.equal(info.mode, 'worker', `the demo fell back to the inline path: ${info.workerError}`);
+    assert.equal(info.isWorker, true);
+    assert.equal(info.hasModule, false, 'a worker-backed document must not own a wasm instance on the main thread');
+  });
+
+  await step('text and links cross the worker boundary', async () => {
+    const res = await page.eval(`(async () => {
+      const doc = window.viewer.document;
+      // page 3 is not on screen, so this is a real round trip, not a cache hit
+      const items = await doc.loadText(2);
+      const text = await doc.getPageText(2);
+      const links = await doc.loadLinks(2);
+      return { runs: items.length, chars: text.length, links: Array.isArray(links) };
+    })()`);
+    assert.ok(res.runs > 5, `worker returned ${res.runs} text runs`);
+    assert.ok(res.chars > 20, `worker returned ${res.chars} characters`);
+    assert.equal(res.links, true, 'links must come back as an array');
+  });
+
+  await step('the main thread keeps ticking while a page renders', async () => {
+    // The point of the worker: rasterizing a big bitmap must not freeze the tab.
+    // A timer that fires while the render is in flight proves the main thread was
+    // free; on the inline path it would fire once, after the render.
+    const res = await page.eval(`(async () => {
+      const doc = window.viewer.document;
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 2);
+      const started = performance.now();
+      const out = await doc.render(0, { scale: 3, dpr: 2 });
+      const ms = performance.now() - started;
+      clearInterval(timer);
+      return { ticks, ms, w: out.width, h: out.height };
+    })()`);
+    assert.ok(res.w > 1000 && res.h > 1000, `render produced ${res.w}x${res.h}`);
+    assert.ok(res.ticks >= 2, `main thread blocked for ${Math.round(res.ms)} ms (${res.ticks} timer ticks)`);
+  });
+
   await page.screenshot(join(shots, 'vanilla.png'));
 
   await step('page 1 paints real ink into the canvas', async () => {
@@ -265,9 +312,16 @@ try {
   await reactPage.goto(`${base}/examples/react/`);
 
   await step('React component mounts and renders a page', async () => {
-    await reactPage.waitFor('document.querySelector(".wpdf-root[data-status=\\"ready\\"] canvas")?.width > 100', {
-      label: 'react first paint', timeout: 25000,
-    });
+    // Wait for the page bitmap, not for the canvas element: a bare <canvas> is
+    // 300x150 before the first putImageData, which is enough to pass a
+    // width-only check while the render is still in flight (worker mode).
+    await reactPage.waitFor(
+      `(() => {
+        const c = document.querySelector('.wpdf-root[data-status="ready"] canvas');
+        return !!c && c.width > 300 && c.height > 400;
+      })()`,
+      { label: 'react first paint', timeout: 25000 },
+    );
     const info = await reactPage.eval(`(() => {
       const c = document.querySelector('.wpdf-page canvas');
       return { w: c.width, h: c.height, pages: document.querySelector('.wpdf-toolbar')?.textContent };

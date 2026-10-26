@@ -1,0 +1,56 @@
+# .gitlab-ci.yml — test, then publish the demo with GitLab Pages.
+#
+# `dist/` (JS *and* dist/wasm/pdf-reader.wasm) is committed, so a Pages build
+# needs Node and nothing else: no emsdk, no C++ toolchain. The only generated
+# inputs are the React demo bundle (esbuild) and `_site/`.
+#
+# GitLab Pages serves the `public` artifact of a job named anything with
+# `pages: true`, at https://<namespace>.gitlab.io/<project>/. `_site/` uses
+# relative URLs only, so it works under that base path unchanged.
+
+image: node:20
+
+stages:
+  - test
+  - deploy
+
+variables:
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - .npm/
+
+unit:
+  stage: test
+  script:
+    - npm ci --prefer-offline --no-audit --no-fund
+    - node test/unit.mjs
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - test/fixtures/*.pdf
+
+pages:
+  stage: deploy
+  needs: [unit]
+  script:
+    - npm ci --prefer-offline --no-audit --no-fund
+    # examples/react/bundle.js is gitignored, so rebuild it here
+    - node examples/build-react.mjs
+    - node scripts/build-demo.mjs
+    - rm -rf public && mv _site public
+    # a deployment is not done until the artefact the server will serve is complete
+    - test -f public/dist/wasm/pdf-reader.wasm
+    - test -f public/dist/worker.js
+    - test -f public/dist/remote.js
+    - du -sh public
+  artifacts:
+    paths:
+      - public
+  pages: true
+  rules:
+    # publish from the default branch only; MRs still run the unit stage
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

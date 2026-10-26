@@ -67,6 +67,9 @@ export interface PdfReaderApi {
 
 export interface PdfReaderProps extends ModuleOptions {
   /** Document to display: ArrayBuffer, Blob, File, URL or Response. */
+  /* `worker`, `workerUrl` and `workerFactory` come from ModuleOptions: a
+     worker-backed reader hands `PdfRemoteDocument` to the callbacks below, whose
+     text/search accessors are Promises. */
   file?: DocumentSource | null;
   /** Controlled page (zero-based). */
   page?: number;

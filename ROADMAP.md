@@ -1,7 +1,7 @@
 # Roadmap — from "reads most PDFs" to MuPDF-grade output
 
-Last verified: 2026-10-26 (wasm 3.1 MB, 1.9 MB gzipped; 62 unit checks; 14 e2e
-steps). Capability parity against pdf.js 6.4.299 / MuPDF.js 1.28.1: **73 % / 77 %**
+Last verified: 2026-10-26 (wasm 3.1 MB, 1.9 MB gzipped; 67 unit checks; 17 e2e
+steps). Capability parity against pdf.js 6.4.299 / MuPDF.js 1.28.1: **75 % / 79 %**
 weighted, regenerated with `node scripts/competitive-parity.mjs` (the README table
 is that script's output — do not hand-edit it). Working notes for an agent doing
 this work: `CLAUDE.md`.
@@ -37,7 +37,7 @@ Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
 ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
 0.0 ink against a reference that has ink is always a defect, never a pass.
 
-## Status: M1–M8 done, M9 open
+## Status: M1–M8 done, M9.1 done, M9.2/M9.3 open
 
 All eight feature milestones have landed. What is left of each is **residue, not
 scope**: one decoder, one shading family, three fonts, `/SMask`, form repaint, and
@@ -54,10 +54,11 @@ the a11y layer. None of them changes the architecture, and each is priced in
 | M6 JPEG 2000 | **broken for most encoders** | OpenJPEG codestreams decode to noise |
 | M7 Type3/Type1/CFF | Type3 + OTTO done | Type1 PFB, vertical (`-V`) CMaps |
 | M8 OCG/forms/outline | done | field repaint under a real `/AP`, no input overlay, no save |
-| M9 architecture | **open** | worker, ranged loading, display list + page cache |
+| M9 architecture | **partial** | M9.1 worker done; ranged loading and the display list are open |
 
-So the remaining work is: **M9 first** (it is the biggest single score gain and
-unblocks large documents), then the residues in the order below.
+So the remaining work is: **M9.2/M9.3 first** (ranged loading is what unblocks
+large documents, and the worker that makes it useful has landed), then the
+residues in the order below.
 
 ## Strategy
 
@@ -237,7 +238,7 @@ radio, choice).
 survives a re-render at another scale.
 *Risk*: scope creep into scripting — do not implement `/AA` JavaScript.
 
-### M9 — Architecture (the only open milestone) — *open*
+### M9 — Architecture — *partial: M9.1 (worker) landed, M9.2/M9.3 open*
 *Why*: it is the last structural gap and the biggest single score gain on the
 comparison table (+3.0 points, the difference between "toy on a 200-page scan" and
 "replacement"). It is also the only item that cannot be bolted on later: the
@@ -246,7 +247,7 @@ renderer is called.
 
 Sub-items, in this order — each ships independently and leaves the tests green:
 
-**M9.1 — Web Worker for parse + render (3–4 days).**
+**M9.1 — Web Worker for parse + render (3–4 days) — *done*.**
 *Where*: new `src/js/worker.js` (the worker entry) + a `WorkerPool` in
 `src/js/document.js`; `mount.js` and `src/js/react/hooks.js` switch to the pool
 behind an option (`worker: true`), synchronous path stays the default until M9.3.
@@ -261,6 +262,35 @@ asserting the worker path is actually taken (not silently falling back).
 *Risk*: the wasm heap is per worker, so N workers = N heaps (each up to 1 GiB
 reserved, 64 MB pre-grown for JBIG2). Start with one worker; cap the pool at
 `navigator.hardwareConcurrency - 1` only after measuring.
+
+*Landed*: `src/js/worker.js` (the worker entry, one module per worker, one queue
+because the module owns a single bitmap) + `src/js/remote.js` (`PdfRemoteDocument`
+and a `WorkerPool` that one worker serves until its last document closes).
+`PdfDocument.open(src, {worker: true})` returns the remote document, which keeps
+the *synchronous* part of the API by capturing geometry, metadata, outline, form
+fields and warnings once at open time; text and links ride back on the render
+response (warmed cache, so the viewer's existing `getText`/`getLinks` calls keep
+working) and `search()`/`getPageText()` are Promises. `{worker: 'strict'}` throws
+instead of falling back, and a fallback records why on `document.workerError` —
+silent fallback was the risk the acceptance line was written against.
+Accept measured in `test/e2e.mjs`: a scale-3/dpr-2 render takes ~900 ms of worker
+time while a 2 ms timer on the main thread fires ~200 times (the inline path
+fires it 0 times), `document.Module` is undefined on the main thread, and a
+round trip for a page that was never rendered returns its text runs.
+Both demos run worker mode; the e2e pixel baseline is unchanged, which is the
+point (same rasterizer, different thread).
+
+Two things this exposed, both fixed in the same change:
+- **A fallback must be loud.** The first cut fell back silently when the worker
+  404'd (the React demo's bundle resolves `workerUrl` against the page, not the
+  library), and every "worker" assertion passed while nothing was threaded.
+- **Cyclic structure in the file.** `Document::outlineJson()` recursed without a
+  visited set, so `/First` pointing at its own item looped forever (it hung, it
+  did not crash: the wasm stack has no guard page), and the page-tree walks in
+  the parser, the outline's page index and the form builder re-descended into
+  cyclic `/Kids`, inflating a 1-page file to 40 pages. Same class as
+  CVE-2025-46206 (mupdf `strip_outline`). Fixed with visited sets + depth/item
+  caps; `test/fixtures/outline-cycle.pdf` and three unit checks hold it down.
 
 **M9.2 — Ranged loading (1–2 weeks, parser work).**
 *Where*: `pdfdoc.cpp` byte access (every `read`/`memcpy` of the source buffer),

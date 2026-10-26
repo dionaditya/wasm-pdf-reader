@@ -94,6 +94,10 @@
     const viewer = mountPdfReader('#viewer', {
       file: '/test/fixtures/reader-sample.pdf',
       fit: 'page',
+      // Parse + rasterize in a Web Worker: the main thread only does
+      // putImageData, so scrolling and typing stay smooth. Swap to `false` (or
+      // omit) for the synchronous inline path.
+      worker: true,
       labels: { previousPage: 'Previous page', nextPage: 'Next page' },
       highlights: (page) => hits.filter((h) => h.page === page),
       onPageChange: (page) => { window.__demoPage = page; },
@@ -102,9 +106,10 @@
 
     // ── search: highlight every hit on the current page ────────────────────
     const searchInput = document.getElementById('search');
-    searchInput.addEventListener('input', () => {
+    searchInput.addEventListener('input', async () => {
       const q = searchInput.value.trim();
-      hits = q.length > 1 ? viewer.document?.search(q, { limit: 200 }) : [];
+      // On a worker-backed document search() returns a Promise.
+      hits = q.length > 1 ? await viewer.search(q, { limit: 200 }) : [];
       const first = hits[0]?.page;
       if (first !== undefined && first !== viewer.state.page) viewer.goToPage(first);
       else viewer.rerender();

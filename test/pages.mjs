@@ -63,7 +63,10 @@ async function visit(path, check) {
     await page.goto(`http://127.0.0.1:${PORT}/wasm-pdf-reader${path}`);
     const info = await page.waitFor(`(() => {
       const c = document.querySelector('.wpdf-page canvas');
-      if (!c || !c.width) return false;
+      // A bare <canvas> is 300x150 before the first putImageData; waiting on
+      // that would read an empty bitmap and fail the ink check (worker mode
+      // makes the gap between element creation and paint visible).
+      if (!c || c.width < 400) return false;
       const ctx = c.getContext('2d');
       const { data } = ctx.getImageData(0, 0, Math.min(c.width, 120), Math.min(c.height, 120));
       let ink = 0;

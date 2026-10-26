@@ -55,9 +55,12 @@ function App() {
   const [meta, setMeta] = useState({});
   const [scroll, setScroll] = useState(false);
 
-  const extract = useCallback(() => {
-    const body = reader.current?.pageText(page) ?? '';
-    setText(body.trim());
+  const extract = useCallback(async () => {
+    // `pageText` is synchronous inline and a Promise when the engine runs in a
+    // worker (worker mode is on for this demo).
+    const value = reader.current?.pageText(page);
+    const body = value && typeof value.then === 'function' ? await value : value;
+    setText(String(body ?? '').trim());
   }, [page]);
 
   return (
@@ -67,6 +70,11 @@ function App() {
           ref={reader}
           file="/test/fixtures/reader-sample.pdf"
           wasmUrl="/dist/wasm/pdf-reader.wasm"
+          // Worker mode: parse + rasterize off the main thread. A bundled host
+          // must point workerUrl at the deployed dist/worker.js, because the
+          // bundle's import.meta.url is the page, not the library.
+          worker
+          workerUrl="/dist/worker.js"
           page={page}
           onPageChange={setPage}
           fit="width"

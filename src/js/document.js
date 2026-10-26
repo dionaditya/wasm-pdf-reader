@@ -112,15 +112,65 @@ export class PdfDocument {
     this._sizeCache = new Map();
     this._textCache = new Map();
     this._linkCache = new Map();
+    this._workerError = null;
   }
+
+  /** Which path this document runs on: 'worker' or 'inline'. */
+  get mode() { return 'inline'; }
+
+  /** True for a worker-backed document (see remote.js). */
+  get isWorker() { return false; }
+
+  /** Why `{worker:true}` fell back to the inline path, or null. */
+  get workerError() { return this._workerError; }
+
+  set workerError(err) { this._workerError = err || null; }
 
   /**
    * Parse a PDF. The bytes are copied into wasm memory; the source can be released.
+   *
+   * With `{ worker: true }` the file is parsed and rendered inside a Web Worker
+   * and the result is a `PdfRemoteDocument` (same surface; text/link accessors
+   * are pre-cached by the render, search returns a Promise). When a worker
+   * cannot start — no `Worker`, a 404 on `workerUrl`, a CSP that blocks it — the
+   * call falls back to the inline path and records why on `workerError`, unless
+   * `worker: 'strict'` was asked for.
+   *
    * @param {ArrayBuffer|Uint8Array|Blob|File|string|URL|Response} source
-   * @param {import('./loader.js').ModuleOptions & {filename?: string, password?: string}} [options]
+   * @param {import('./loader.js').ModuleOptions & {filename?: string, password?: string,
+   *          worker?: boolean|'strict', workerUrl?: string, workerFactory?: Function}} [options]
    * @returns {Promise<PdfDocument>}
    */
   static async open(source, options = {}) {
+    let workerError = null;
+    if (options.worker) {
+      if (typeof Worker === 'undefined') {
+        const err = new Error('wasm-pdf-reader: no Web Worker support in this environment');
+        if (options.worker === 'strict') throw err;
+        workerError = err;
+      } else {
+        try {
+          const remote = await import('./remote.js');
+          return await remote.openRemote(source, options);
+        } catch (err) {
+          if (options.worker === 'strict') throw err;
+          workerError = err;           // fall through to the inline path, loudly
+        }
+      }
+    }
+    const doc = await PdfDocument._openInline(source, options);
+    if (workerError) {
+      doc.workerError = workerError;
+      if (typeof globalThis.dispatchEvent === 'function') {
+        try {
+          globalThis.dispatchEvent(new CustomEvent('wpdf-worker-fallback', { detail: { error: workerError } }));
+        } catch { /* CustomEvent is not universal */ }
+      }
+    }
+    return doc;
+  }
+
+  static async _openInline(source, options = {}) {
     const Module = await loadModule(options);
     const { ptr, size } = await copyIntoWasm(Module, source);
     let handle = 0;
@@ -364,6 +414,12 @@ export class PdfDocument {
     this._textCache.set(index, items);
     return items;
   }
+
+  /** Async form of `getText`, for code that must also work on a worker document. */
+  async loadText(index) { return this.getText(index); }
+
+  /** Async form of `getLinks`. */
+  async loadLinks(index) { return this.getLinks(index); }
 
   /** Plain text for one page. */
   getPageText(index, options) {

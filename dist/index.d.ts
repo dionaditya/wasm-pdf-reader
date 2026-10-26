@@ -49,7 +49,7 @@ export interface LinkAnnotation {
   page?: number;
 }
 
-export interface ModuleOptions {
+export interface ModuleOptions extends WorkerOptions {
   /** URL of pdf-reader.wasm; defaults to the file next to the JS glue. */
   wasmUrl?: string;
   /** Pre-fetched wasm bytes, for CSP or offline use. */
@@ -60,6 +60,25 @@ export interface ModuleOptions {
   moduleOptions?: Record<string, any>;
   /** A different emscripten factory. */
   factory?: (options: any) => Promise<any>;
+}
+
+export interface WorkerOptions {
+  /**
+   * Parse and rasterize in a Web Worker. `true` falls back to the inline path
+   * when no worker can start (the reason lands on `document.workerError`);
+   * `'strict'` rejects instead.
+   */
+  worker?: boolean | 'strict';
+  /** URL of dist/worker.js. Required when the library is bundled — the default
+   *  resolves against import.meta.url, which is the page in a bundle. */
+  workerUrl?: string;
+  /** Build the worker yourself (different URL, blob worker, instrumentation). */
+  workerFactory?: (options: ModuleOptions) => Worker;
+}
+
+export interface OpenOptions extends ModuleOptions, WorkerOptions {
+  filename?: string;
+  password?: string;
 }
 
 export type DocumentSource =
@@ -103,10 +122,22 @@ export interface RenderResult {
 }
 
 export declare class PdfDocument {
+  /** Inline: the wasm engine runs on the calling thread. */
   static open(
     source: DocumentSource,
-    options?: ModuleOptions & { filename?: string; password?: string },
+    options?: OpenOptions & { worker?: false | undefined },
   ): Promise<PdfDocument>;
+  /** Worker mode: the engine runs off the main thread (see PdfRemoteDocument). */
+  static open(
+    source: DocumentSource,
+    options: OpenOptions & { worker: true | 'strict' },
+  ): Promise<PdfRemoteDocument>;
+
+  /** Which path this document runs on. */
+  readonly mode: 'inline';
+  readonly isWorker: false;
+  /** Why `{ worker: true }` fell back to the inline path, or null. */
+  readonly workerError: Error | null;
 
   readonly pageCount: number;
   readonly metadata: Record<string, string>;
@@ -125,6 +156,10 @@ export declare class PdfDocument {
   getLinks(index: number): LinkAnnotation[];
 
   getText(index: number): TextItem[];
+  /** Async form of getText, so one call site works on both document kinds. */
+  loadText(index: number): Promise<TextItem[]>;
+  /** Async form of getLinks. */
+  loadLinks(index: number): Promise<LinkAnnotation[]>;
   getPageText(index: number, options?: { lineSeparator?: string }): string;
   getAllText(options?: { lineSeparator?: string }): string[];
   search(query: string, options?: {
@@ -139,6 +174,58 @@ export declare class PdfDocument {
     scale: number,
   ): { left: number; top: number; width: number; height: number };
 
+  close(): void;
+}
+
+/**
+ * A document whose wasm instance lives in a worker (`open(file, { worker: true })`).
+ *
+ * The synchronous part of `PdfDocument` survives because page geometry,
+ * metadata, the outline, form fields and warnings are captured once at open
+ * time. Text and links for a page are filled by the render that drew it, so the
+ * cached getters are warm in the viewer; use the async loaders otherwise.
+ */
+export interface PdfRemoteDocument {
+  readonly mode: 'worker';
+  readonly isWorker: true;
+  readonly pageCount: number;
+  readonly metadata: Record<string, string>;
+  readonly warnings: string[];
+  readonly outline: { title: string; page: number }[];
+  readonly form: { name: string; type: string; value: string; page: number; rect: any }[];
+  filename: string;
+
+  getPageSize(index: number): PageSize;
+  render(index: number, options?: RenderOptions): Promise<RenderResult>;
+  renderToCanvas(
+    canvas: HTMLCanvasElement,
+    index: number,
+    options?: RenderOptions & { cssScale?: boolean },
+  ): Promise<RenderResult>;
+
+  /** Cached runs/links for a page that has been rendered; [] otherwise. */
+  getText(index: number): TextItem[];
+  getLinks(index: number): LinkAnnotation[];
+  loadText(index: number): Promise<TextItem[]>;
+  loadLinks(index: number): Promise<LinkAnnotation[]>;
+  getPageText(index: number, options?: { lineSeparator?: string }): Promise<string>;
+  getAllText(options?: { lineSeparator?: string }): Promise<string[]>;
+
+  search(query: string, options?: {
+    caseSensitive?: boolean;
+    limit?: number;
+    pages?: number[];
+  }): Promise<SearchHit[]>;
+
+  setField(name: string, value: string): Promise<boolean>;
+
+  boxToCss(
+    box: { x0: number; y0: number; x1: number; y1: number },
+    index: number,
+    scale: number,
+  ): { left: number; top: number; width: number; height: number };
+
+  /** Terminates the worker when this was the last document it served. */
   close(): void;
 }
 
@@ -192,6 +279,11 @@ export interface ViewerOptions {
   wasmUrl?: string;
   wasmBinary?: ArrayBuffer | Uint8Array;
   module?: any;
+  /** Parse and rasterize in a Web Worker. Both demos run this path. */
+  worker?: boolean | 'strict';
+  /** URL of dist/worker.js; required when your app bundles the library. */
+  workerUrl?: string;
+  workerFactory?: (options: ModuleOptions) => Worker;
   highlights?: (page: number, scale: number) => SearchHit[];
   renderError?: (error: Error) => Node;
   onReady?: (info: { pageCount: number; metadata: Record<string, string>; document: PdfDocument }) => void;
@@ -216,7 +308,8 @@ export interface ViewerController {
   setFile(source: DocumentSource, options?: { page?: number; filename?: string }): Promise<void>;
   setTheme(theme: Record<string, string | number>): void;
   setInverted(on: boolean): void;
-  search(query: string, options?: { caseSensitive?: boolean; limit?: number }): SearchHit[];
+  /** A Promise on a worker-backed document (open with `worker: true`). */
+  search(query: string, options?: { caseSensitive?: boolean; limit?: number }): SearchHit[] | Promise<SearchHit[]>;
   rerender(): void;
   destroy(): void;
 }

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <set>
 #include <zlib.h>
 #include <functional>
 
@@ -300,10 +301,17 @@ bool Document::load(const uint8_t* data, size_t len) {
     // walk the page tree, inheriting the attributes that matter
     struct Walker {
         Document* d;
+        // A crafted /Kids that lists an ancestor (or itself) is the cheapest
+        // possible resource attack on a viewer: without this set the walk
+        // re-descends until the depth/length caps turn it into a wrong page
+        // count instead of a hang. Same class as the mupdf < 1.26.2 outline
+        // recursion advisory, one level up the tree.
+        std::set<const Obj*> seen;
         void walk(ObjP node, ObjP inhRes, ObjP inhBox, ObjP inhRot, int depth) {
             if (!node || depth > 40 || d->pages.size() > 5000) return;
             node = d->resolve(node);
             if (!node) return;
+            if (!seen.insert(node.get()).second) return;
             std::string type = node->get("Type") ? objName(node->get("Type")) : "";
             ObjP res = node->get("Resources") ? d->resolve(node->get("Resources")) : inhRes;
             ObjP box = node->get("MediaBox")  ? node->get("MediaBox")  : inhBox;
@@ -1672,11 +1680,13 @@ static std::vector<FieldHit> gatherFields(Document* doc) {
     ObjP pages = cat ? doc->resolve(cat->get("Pages")) : nullptr;
     std::vector<ObjP> queue;
     if (pages) queue.push_back(pages);
+    std::set<const Obj*> seen;      // cyclic /Kids must not loop here either
     int idx = 0;
     while (!queue.empty()) {
         ObjP node = queue.front();
         queue.erase(queue.begin());
         if (!node || node->t != O_DICT) continue;
+        if (!seen.insert(node.get()).second) continue;
         std::string tn = objName(doc->resolve(node->get("Type")));
         if (tn == "Pages") {
             ObjP kids = doc->resolve(node->get("Kids"));
@@ -1750,11 +1760,16 @@ std::string Document::outlineJson() {
     ObjP pages = resolve(cat->get("Pages"));
     std::vector<ObjP> queue;
     if (pages) queue.push_back(pages);
+    // Cyclic /Kids spins this queue forever — it is the first thing outlineJson
+    // does, so a cyclic page tree hung `document.outline` before it ever reached
+    // the outline walk.
+    std::set<const Obj*> pageSeen;
     int idx = 0;
     while (!queue.empty()) {
         ObjP node = queue.front();
         queue.erase(queue.begin());
         if (!node || node->t != O_DICT) continue;
+        if (!pageSeen.insert(node.get()).second) continue;
         ObjP type = resolve(node->get("Type"));
         std::string tn = type && type->t == O_NAME ? type->str : "";
         if (tn == "Pages") {
@@ -1767,9 +1782,16 @@ std::string Document::outlineJson() {
     }
 
     bool first = true;
-    std::function<void(ObjP)> walk = [&](ObjP item) {
+    // Cycles: an item whose /First or /Next points back up the tree recurses
+    // until the wasm stack runs into the heap (no guard page in wasm, so it is
+    // an infinite loop rather than a clean crash). `visited` breaks the cycle,
+    // and the depth/item caps bound a file that is merely enormous.
+    std::set<const Obj*> visited;
+    int emitted = 0;
+    std::function<void(ObjP, int)> walk = [&](ObjP item, int depth) {
         int guard = 0;
-        while (item && item->t == O_DICT && guard++ < 5000) {
+        while (item && item->t == O_DICT && guard++ < 5000 && depth <= 64 && emitted < 5000) {
+            if (!visited.insert(item.get()).second) return;
             ObjP title = resolve(item->get("Title"));
             std::string t = title && title->t == O_STR ? title->str : "";
             int page = -1;
@@ -1783,13 +1805,14 @@ std::string Document::outlineJson() {
                 if (!first) out += ',';
                 first = false;
                 out += "{\"title\":\"" + jsonEscapeText(t) + "\",\"page\":" + std::to_string(page) + "}";
+                emitted++;
             }
             ObjP child = resolve(item->get("First"));
-            if (child) walk(child);
+            if (child) walk(child, depth + 1);
             item = resolve(item->get("Next"));
         }
     };
-    walk(resolve(outlines->get("First")));
+    walk(resolve(outlines->get("First")), 0);
     out += "]";
     return out;
 }

@@ -25,6 +25,7 @@ const rewrite = (html) => html
   .replaceAll('/dist/index.js', '../dist/index.js')
   .replaceAll('/dist/react/index.js', '../dist/react/index.js')
   .replaceAll('/dist/wasm/pdf-reader.wasm', '../dist/wasm/pdf-reader.wasm')
+  .replaceAll('/dist/worker.js', '../dist/worker.js')
   .replaceAll('/test/fixtures/reader-sample.pdf', '../reader-sample.pdf');
 
 if (!existsSync(join(root, 'dist', 'wasm', 'pdf-reader.wasm'))) {
