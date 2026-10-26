@@ -35,6 +35,19 @@ Two things are easy to get wrong:
 
 Two branches: `main` holds the source, `gh-pages` holds `_site/`.
 
+> **There is no Pages workflow, on purpose.** `.github/workflows/pages.yml` used
+> `actions/deploy-pages`, and this repository's Pages *source* is the `gh-pages`
+> branch, so every push to `main` failed with `Invalid deployment branch and no
+> branch protection rules set in the environment. Deployments are only allowed
+> from gh-pages`. Two coherent setups exist; this repo uses the branch, because
+> the deploy is two commands and needs no settings:
+>
+> - *branch deploy (current)*: no workflow, `cp -r _site/. /tmp/ghpages/` +
+>   push, which is what the recipe below does;
+> - *Actions deploy*: restore a workflow with `upload-pages-artifact` +
+>   `deploy-pages`, and switch Settings → Pages → Source to **GitHub Actions**.
+>   Do not do both — the branch push and the workflow overwrite each other.
+
 ```bash
 git push origin main
 
