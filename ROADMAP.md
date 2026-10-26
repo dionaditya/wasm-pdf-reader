@@ -1,6 +1,10 @@
 # Roadmap — from "reads most PDFs" to MuPDF-grade output
 
-Last verified: 2026-10-23 (wasm 3.0 MB, 1.8 MB gzipped; 62 unit checks; 14 e2e steps).
+Last verified: 2026-10-26 (wasm 3.1 MB, 1.9 MB gzipped; 62 unit checks; 14 e2e
+steps). Capability parity against pdf.js 6.4.299 / MuPDF.js 1.28.1: **73 % / 77 %**
+weighted, regenerated with `node scripts/competitive-parity.mjs` (the README table
+is that script's output — do not hand-edit it). Working notes for an agent doing
+this work: `CLAUDE.md`.
 
 MuPDF is both the target and the oracle: every claim below is measured against it
 with `~/pdfvenv/bin/python` + `pymupdf` at `Matrix(1,1)`, comparing ink ratio and
@@ -32,6 +36,28 @@ fixture that fails today.
 Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
 ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
 0.0 ink against a reference that has ink is always a defect, never a pass.
+
+## Status: M1–M8 done, M9 open
+
+All eight feature milestones have landed. What is left of each is **residue, not
+scope**: one decoder, one shading family, three fonts, `/SMask`, form repaint, and
+the a11y layer. None of them changes the architecture, and each is priced in
+`README.md` → *How it compares* (percentage points of the same weighted score).
+
+| Milestone | State | Left |
+| --- | --- | --- |
+| M1 ICC | done for images | fills still use `cmykToRgb()`; lcms2 would close it (P1.4) |
+| M2 tiling patterns | done | 45° checker AA sits at 7.65/255 (edge quality, ink matches) |
+| M3 blend/transparency | done | `gs /SMask` ignored; non-isolated groups composited isolated |
+| M4 mesh shadings | partial | types 1/6/7 unimplemented; 4/5 render but disagree with MuPDF |
+| M5 Separation/DeviceN | done | — |
+| M6 JPEG 2000 | **broken for most encoders** | OpenJPEG codestreams decode to noise |
+| M7 Type3/Type1/CFF | Type3 + OTTO done | Type1 PFB, vertical (`-V`) CMaps |
+| M8 OCG/forms/outline | done | field repaint under a real `/AP`, no input overlay, no save |
+| M9 architecture | **open** | worker, ranged loading, display list + page cache |
+
+So the remaining work is: **M9 first** (it is the biggest single score gain and
+unblocks large documents), then the residues in the order below.
 
 ## Strategy
 
@@ -211,16 +237,67 @@ radio, choice).
 survives a re-render at another scale.
 *Risk*: scope creep into scripting — do not implement `/AA` JavaScript.
 
-### M9 — Architecture (behind the above, do when the UI feels slow) — *viewer extras landed*
-- Web Worker for parse + render (transferables for the RGBA buffer).
-- Ranged loading (`read(offset,len)` behind the parser; Range requests in the
-  fetcher) — this is the only way past the 1 GiB whole-file ceiling.
-- Display list + page cache with a memory budget (currently one RGBA per page,
-  no eviction).
-- ~~Outlines/bookmarks, thumbnails, document properties~~ — done:
-  `document.outline`, the page rail's lazily rendered thumbnails,
-  `document.metadata`, and a print action that rasterizes every page. Probed by
-  e2e ("viewer capability probes return booleans, not undefined").
+### M9 — Architecture (the only open milestone) — *open*
+*Why*: it is the last structural gap and the biggest single score gain on the
+comparison table (+3.0 points, the difference between "toy on a 200-page scan" and
+"replacement"). It is also the only item that cannot be bolted on later: the
+parser's `read(offset,len)` boundary and the display list both change how the
+renderer is called.
+
+Sub-items, in this order — each ships independently and leaves the tests green:
+
+**M9.1 — Web Worker for parse + render (3–4 days).**
+*Where*: new `src/js/worker.js` (the worker entry) + a `WorkerPool` in
+`src/js/document.js`; `mount.js` and `src/js/react/hooks.js` switch to the pool
+behind an option (`worker: true`), synchronous path stays the default until M9.3.
+*Approach*: one module instantiation per worker (the module owns a single bitmap,
+so one worker can serve one render at a time); post the file bytes once, then
+`{op:'render', page, scale, dpr}`; transfer the RGBA `ArrayBuffer` back and
+`putImageData` on the main thread. Text/links stay request/response JSON. Fall
+back to the inline path when `Worker` is unavailable.
+*Accept*: no long task > 50 ms on the main thread while scrolling 20 pages at
+fit-width; both demos load with `worker: true`; e2e green with one new step
+asserting the worker path is actually taken (not silently falling back).
+*Risk*: the wasm heap is per worker, so N workers = N heaps (each up to 1 GiB
+reserved, 64 MB pre-grown for JBIG2). Start with one worker; cap the pool at
+`navigator.hardwareConcurrency - 1` only after measuring.
+
+**M9.2 — Ranged loading (1–2 weeks, parser work).**
+*Where*: `pdfdoc.cpp` byte access (every `read`/`memcpy` of the source buffer),
+`src/js/document.js` `copyIntoWasm`, and a `fetch` wrapper that issues `Range`
+requests.
+*Approach*: put `read(offset, len)` behind the parser and page the file in on
+demand (4–64 KB chunks, LRU on the JS side); use `Range: bytes=` when the origin
+supports it, otherwise a full fetch. This is the only way past the 1 GiB
+whole-file ceiling and the reason a 300 MB scan currently cannot open on a phone.
+*Fixture*: a > 100 MB synthetic scan (`scripts/make_large_fixture.py`), plus a
+server that answers 206 and one that does not (both paths must work).
+*Accept*: 100 MB document renders page 1 while < 10 MB has been fetched; peak
+wasm heap < 150 MB; `test/unit.mjs` still passes with a `read`-instrumented
+source that fails on any access beyond the fetched window.
+*Risk*: encryption and linearised files read non-sequentially — the encrypted
+path must not assume the whole buffer is resident. Keep the monolithic path as a
+fallback for `< 16 MB`.
+
+**M9.3 — Display list + page cache with a budget (1 week).**
+*Where*: `pdfraster.cpp` gains a record/replay split (interpret once into a
+display list, rasterize that), `src/js` gains a byte-budgeted LRU of page bitmaps.
+*Approach*: pair each display list with the scale it was recorded at; replay at
+the requested scale where possible, re-record only on font/CTM changes that
+matter. Budget the cache in bytes (`navigator.deviceMemory`-derived default,
+overridable) and evict least-recently-used, never the visible page.
+*Accept*: scrolling a 200-page document ahead and back does not grow the heap
+beyond the plateau measured by `test/memory.mjs`; re-layout (zoom) on a cached
+page < 30 ms; pixel hashes unchanged at the same scale.
+*Risk*: display lists encode the CTM at record time; text and shadings recorded
+at one scale can look wrong replayed at another. Restrict replay to
+translation-only changes first and re-record otherwise — a wrong fast path is
+worse than a slow correct one.
+
+Already landed, and not part of the above: `document.outline`, the page rail's
+lazily rendered thumbnails, `document.metadata`, and a print action that
+rasterizes every page. Probed by e2e ("viewer capability probes return booleans,
+not undefined").
 
 ## Non-goals
 
