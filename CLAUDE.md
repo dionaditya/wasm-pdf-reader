@@ -36,7 +36,7 @@ node examples/build-react.mjs
 
 # Tests
 node test/unit.mjs              # 67 checks, no browser, ~seconds
-node test/e2e.mjs              # 17 steps in headless Chrome (see §3)
+node test/e2e.mjs              # 18 steps in headless Chrome (see §3)
 node --expose-gc test/memory.mjs
 node test/pages.mjs             # builds _site and serves it under /wasm-pdf-reader/
 scripts/verify_encryption.sh    # needs qpdf; diffs derived keys per revision
@@ -101,6 +101,9 @@ DevTools Protocol, drives both demos, screenshots them into
 ```
 chrome Chrome/…
   ok  wasm module reports the expected page count
+  ok  rendering runs in a worker, with no wasm instance on the main thread
+  ok  text and links cross the worker boundary
+  ok  the main thread keeps ticking while a page renders
   ok  page 1 paints real ink into the canvas
   ok  canvas is sized for the fit-width scale
   ok  navigation renders a different page
@@ -111,11 +114,12 @@ chrome Chrome/…
   ok  continuous mode stacks every page
   ok  per-page pixel hashes are stable
   ok  page sheet renders all three pages in one image
+  ok  the React demo also runs the engine in a worker
   ok  React component mounts and renders a page
   ok  React text extraction returns the page text
   ok  React metadata lands in the sidebar
 
-14 steps passed
+18 steps passed
 screenshots: docs/screenshots/
 ```
 
@@ -303,7 +307,7 @@ For `M{N}` in `ROADMAP.md`:
 4. `node test/e2e.mjs` green; refresh `test/baseline/visual.json` only if the
    change is intended, and say so in the commit.
 5. `README.md`: capability bullet + the "not supported" paragraph + the *Limits*
-   section if a ceiling moved. Re-measure counts (`67 checks`, `17 e2e steps`,
+   section if a ceiling moved. Re-measure counts (`67 checks`, `18 e2e steps`,
    `ls -l dist/wasm/`) — do not copy the previous README, it accumulates stale
    claims.
 6. `ROADMAP.md`: mark the milestone, record what landed and what did not, keep the

@@ -311,6 +311,18 @@ try {
   await reactPage.setViewport(1280, 900, 1);
   await reactPage.goto(`${base}/examples/react/`);
 
+  await step('the React demo also runs the engine in a worker', async () => {
+    // The bundle resolves workerUrl against the page, not the library, so this
+    // is the step that catches a worker 404 falling back to the main thread.
+    await reactPage.waitFor('window.__reactDoc', { label: 'react document', timeout: 25000 });
+    const info = await reactPage.eval(`(() => {
+      const d = window.__reactDoc;
+      return d ? { mode: d.mode, err: d.workerError ? String(d.workerError.message) : null } : null;
+    })()`);
+    assert.ok(info, 'the demo never reported its document through onLoad');
+    assert.equal(info.mode, 'worker', `React demo fell back to inline: ${info.err}`);
+  });
+
   await step('React component mounts and renders a page', async () => {
     // Wait for the page bitmap, not for the canvas element: a bare <canvas> is
     // 300x150 before the first putImageData, which is enough to pass a

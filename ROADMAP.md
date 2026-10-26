@@ -1,6 +1,6 @@
 # Roadmap — from "reads most PDFs" to MuPDF-grade output
 
-Last verified: 2026-10-26 (wasm 3.1 MB, 1.9 MB gzipped; 67 unit checks; 17 e2e
+Last verified: 2026-10-26 (wasm 3.1 MB, 1.9 MB gzipped; 67 unit checks; 18 e2e
 steps). Capability parity against pdf.js 6.4.299 / MuPDF.js 1.28.1: **75 % / 79 %**
 weighted, regenerated with `node scripts/competitive-parity.mjs` (the README table
 is that script's output — do not hand-edit it). Working notes for an agent doing

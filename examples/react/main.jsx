@@ -96,7 +96,12 @@ function App() {
           pageOverlay={(index) => (
             index === 0 ? <div className="badge">custom overlay</div> : null
           )}
-          onLoad={({ metadata }) => setMeta(metadata || {})}
+          onLoad={({ metadata, document: doc }) => {
+            setMeta(metadata || {});
+            // exposed for devtools and for the e2e assertion that this demo
+            // really runs the engine in a worker (workerUrl is a bundle path)
+            window.__reactDoc = doc;
+          }}
         />
       </div>
 
