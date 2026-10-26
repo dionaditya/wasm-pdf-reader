@@ -8,5 +8,6 @@ export { PdfDocument, toBytes } from './document.js';
 export { loadModule, resetModule } from './loader.js';
 export { mountPdfReader, defaultLabels, applyTheme } from './mount.js';
 export { groupLines, itemsToText, searchItems, boxToCss } from './text.js';
+export { turnedPageBox, normaliseRotation, stepRotation } from './rotation.js';
 
 export const version = '0.3.0';

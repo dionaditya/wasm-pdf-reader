@@ -20,6 +20,7 @@ import React, {
 import { usePdfDocument } from './hooks.js';
 import { PdfPage } from './PdfPage.jsx';
 import { PdfToolbar } from './PdfToolbar.jsx';
+import { turnedPageBox, normaliseRotation, stepRotation } from '../rotation.js';
 
 const PAD = 32;
 
@@ -42,6 +43,8 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     onPageChange,
     scale: scaleProp,
     defaultScale = 1.5,
+    defaultRotation = 0,
+    onRotationChange,
     fit: fitProp,
     onZoom,
     continuous = false,
@@ -82,6 +85,7 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
 
   const [innerPage, setInnerPage] = useState(Math.max(0, defaultPage | 0));
   const [innerScale, setInnerScale] = useState(defaultScale);
+  const [rotation, setRotationState] = useState(normaliseRotation(defaultRotation));
   const [fit, setFit] = useState(fitProp ?? 'auto');
   const [manualFit, setManualFit] = useState(false);
   const [viewportBox, setViewportBox] = useState({ width: 0, height: 0 });
@@ -116,19 +120,22 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     if (!size) return controlledScale;
     const fitMode = activeFit === undefined || activeFit === null ? 'none' : activeFit;
     if (fitMode === 'none') return controlledScale;
+    // Fit the turned box: a landscape view of a portrait page has to fit on its
+    // shorter axis, not the one the bitmap was rendered at.
+    const box = turnedPageBox(size, 1, rotation);
     const availW = Math.max(120, (viewportBox.width || 800) - PAD);
     const availH = Math.max(120, (viewportBox.height || 800) - PAD);
     let s = fitMode === 'page'
-      ? Math.min(availW / size.width, availH / size.height)
-      : availW / size.width;
+      ? Math.min(availW / box.width, availH / box.height)
+      : availW / box.width;
     // The viewport is a flex item, so a wide page can stretch it and feed
     // fit-width a larger width next frame - the scale then runs away to the
     // clamp. A fitted page never needs to be wider than the window.
-    if (typeof window !== 'undefined' && size.width > 0) {
-      s = Math.min(s, (window.innerWidth * 0.98) / size.width);
+    if (typeof window !== 'undefined' && box.width > 0) {
+      s = Math.min(s, (window.innerWidth * 0.98) / box.width);
     }
     return Math.max(0.1, Math.min(8, s || controlledScale));
-  }, [doc, pageCount, page, controlledScale, activeFit, viewportBox]);
+  }, [doc, pageCount, page, controlledScale, activeFit, viewportBox, rotation]);
 
   useEffect(() => { onLoad?.({ document: doc, pageCount, metadata, warnings }); }, [doc, pageCount, metadata, warnings, onLoad]);
   useEffect(() => { if (error) onError?.(error); }, [error, onError]);
@@ -162,6 +169,24 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     onZoom?.(effectiveScale);
   }, [effectiveScale, onZoom]);
 
+  // A turn is a view change, not document state: nothing is re-rendered, the
+  // cached bitmap is re-laid-out with the box swapped.
+  const rotate = useCallback((dir = 1) => {
+    setRotationState((prev) => {
+      const next = stepRotation(prev, dir);
+      if (next !== prev) onRotationChange?.(next);
+      return next;
+    });
+  }, [onRotationChange]);
+
+  const rotateTo = useCallback((value) => {
+    const next = normaliseRotation(value);
+    setRotationState((prev) => {
+      if (next !== prev) onRotationChange?.(next);
+      return next;
+    });
+  }, [onRotationChange]);
+
   useImperativeHandle(ref, () => ({
     get document() { return doc; },
     get page() { return page; },
@@ -175,6 +200,10 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     zoomOut: () => setScale(effectiveScale / 1.25),
     fitWidth: () => fitTo('width'),
     fitPage: () => fitTo('page'),
+    get rotation() { return rotation; },
+    setRotation: rotateTo,
+    rotateLeft: () => rotate(-1),
+    rotateRight: () => rotate(1),
     reload,
     /** Plain text for a page (extracts and caches it in wasm). A worker-backed
      *  document returns a Promise, so `await` it when `worker` is set. */
@@ -182,7 +211,8 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
     /** All matches for a query: {page, index, length, line, rects}. Returns a
      *  Promise on a worker-backed document. */
     search: (q, o) => doc?.search(q, o) ?? [],
-  }), [doc, page, effectiveScale, pageCount, goToPage, setScale, fitTo, reload]);
+  }), [doc, page, effectiveScale, pageCount, goToPage, setScale, fitTo, reload,
+      rotation, rotateTo, rotate]);
 
   // ── keyboard ──────────────────────────────────────────────────────────────
   const onKeyDown = useCallback((ev) => {
@@ -276,14 +306,17 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
 
   // ── render ────────────────────────────────────────────────────────────────
   const pageSize = doc && pageCount ? doc.getPageSize(Math.min(page, pageCount - 1)) : null;
+  const turnedBox = turnedPageBox(pageSize || { width: 612, height: 792 }, 1, rotation);
   const titleText = title || metadata?.Title || (typeof file === 'object' && file ? file.name : '') || '';
   const toolbarProps = {
     page,
     pageCount,
     scale: effectiveScale,
+    rotation,
     onPageChange: goToPage,
     onZoom: setScale,
     onFit: fitTo,
+    onRotate: rotate,
     labels,
     title: toolbar === true ? titleText : undefined,
   };
@@ -312,6 +345,7 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
       document={doc}
       page={index}
       scale={effectiveScale}
+      rotation={rotation}
       dpr={dpr}
       pixelTransform={pixelTransform}
       renderer={renderer}
@@ -348,7 +382,8 @@ export const PdfReader = forwardRef(function PdfReader(props, ref) {
       {showStatus && (
         <div className="wpdf-status">
           <span>{pageCount ? `Page ${page + 1} of ${pageCount}` : '—'}</span>
-          {pageSize && <span>{Math.round(pageSize.width)} × {Math.round(pageSize.height)} pt</span>}
+          {pageSize && <span>{Math.round(turnedBox.width)} × {Math.round(turnedBox.height)} pt</span>}
+          {rotation ? <span>{rotation}°</span> : null}
           <span>{Math.round(effectiveScale * 150)} dpi</span>
           {lastStats && <span>{lastStats.glyphs} glyphs</span>}
           {warnings.length > 0 && <span>{warnings.length} warning{warnings.length === 1 ? '' : 's'}</span>}

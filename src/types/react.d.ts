@@ -12,6 +12,8 @@ export interface PdfPageProps {
   document: PdfDocument | null;
   page: number;
   scale?: number;
+  /** View rotation in degrees (0/90/180/270), applied on top of the page's /Rotate. */
+  rotation?: number;
   dpr?: number;
   pixelTransform?: RenderOptions['pixelTransform'];
   /** Render only when scrolled into view (continuous mode). */
@@ -32,15 +34,20 @@ export interface PdfToolbarProps {
   page: number;
   pageCount: number;
   scale: number;
+  /** Current view rotation in degrees; the toolbar only reports the buttons. */
+  rotation?: number;
   onPageChange?: (page: number) => void;
   onZoom?: (scale: number) => void;
   onFit?: (fit: 'width' | 'page') => void;
+  /** Turn the view 90°: 1 = clockwise, -1 = counter-clockwise. */
+  onRotate?: (dir: 1 | -1) => void;
   title?: string;
   labels?: ViewerLabels;
   children?: React.ReactNode;
   tools?: React.ReactNode;
   showPageNav?: boolean;
   showZoom?: boolean;
+  showRotate?: boolean;
   className?: string;
 }
 
@@ -60,6 +67,10 @@ export interface PdfReaderApi {
   zoomOut(): void;
   fitWidth(): void;
   fitPage(): void;
+  readonly rotation: number;
+  setRotation(rotation: number): void;
+  rotateLeft(): void;
+  rotateRight(): void;
   reload(): void;
   pageText(page?: number): string;
   search(query: string, options?: { caseSensitive?: boolean; limit?: number }): SearchHit[];
@@ -79,6 +90,9 @@ export interface PdfReaderProps extends ModuleOptions {
   scale?: number;
   defaultScale?: number;
   onZoom?: (scale: number) => void;
+  /** Initial view rotation in degrees (0/90/180/270). Default 0. */
+  defaultRotation?: number;
+  onRotationChange?: (rotation: number) => void;
   fit?: 'none' | 'width' | 'page' | 'auto';
   continuous?: boolean;
   /** true, false, a node, or a render function receiving the toolbar props. */

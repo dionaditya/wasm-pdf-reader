@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PdfDocument, resetModule, version } from '../dist/index.js';
 import { groupLines, itemsToText, searchItems } from '../dist/text.js';
+import { turnedPageBox, normaliseRotation, stepRotation } from '../dist/rotation.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(root, 'test', 'fixtures', 'reader-sample.pdf');
@@ -752,6 +753,54 @@ await check('worker: "strict" refuses to fall back', async () => {
     /Worker/,
     'strict mode must reject when no worker can be started',
   );
+});
+
+// ── rotation (view geometry) ────────────────────────────────────────────────
+await check('a quarter turn swaps the page box and leaves the layer unrotated', async () => {
+  const box = turnedPageBox({ width: 612, height: 792 }, 2, 90);
+  assert.equal(box.width, 792 * 2, 'outer width must be the turned height');
+  assert.equal(box.height, 612 * 2, 'outer height must be the turned width');
+  assert.equal(box.innerWidth, 612 * 2, 'the bitmap layer must keep its unrotated box');
+  assert.equal(box.innerHeight, 792 * 2);
+  assert.equal(box.transform, `translate(${792 * 2}px, 0) rotate(90deg)`);
+});
+
+await check('180° keeps the box and 270° swaps it back the other way', async () => {
+  const half = turnedPageBox({ width: 612, height: 792 }, 1, 180);
+  assert.equal(half.width, 612);
+  assert.equal(half.height, 792);
+  assert.match(half.transform, /rotate\(180deg\)/);
+  const three = turnedPageBox({ width: 612, height: 792 }, 1, 270);
+  assert.equal(three.width, 792);
+  assert.equal(three.height, 612);
+  assert.equal(three.transform, 'translate(0px, 612px) rotate(270deg)');
+});
+
+await check('rotation normalises to 0/90/180/270 and steps both ways', async () => {
+  assert.equal(normaliseRotation(-90), 270);
+  assert.equal(normaliseRotation(450), 90);
+  assert.equal(normaliseRotation(37), 0);
+  assert.equal(normaliseRotation(NaN), 0);
+  assert.equal(stepRotation(0, -1), 270);
+  assert.equal(stepRotation(270, 1), 0);
+  assert.equal(stepRotation(90, 1), 180);
+});
+
+await check('a file too large to copy fails fast with the ranged advice', async () => {
+  // 600 MB: above half the 1 GiB ceiling, so no device can hold the copy plus a
+  // render, and there is no Worker here to take the ranged path.
+  const huge = new Blob([new Uint8Array(600 * 1024 * 1024)]);
+  const t0 = Date.now();
+  await assert.rejects(
+    () => PdfDocument.open(huge, {}),
+    (err) => {
+      assert.match(err.message, /600\.0 MB/);
+      assert.match(err.message, /ranged loading/);
+      assert.doesNotMatch(err.message, /stalled at/, 'the heap was never asked to grow');
+      return true;
+    },
+  );
+  assert.ok(Date.now() - t0 < 2000, 'the refusal must be immediate, not an attempted copy');
 });
 
 console.log(`\n${passed} checks passed${process.exitCode ? ', with failures' : ''}`);

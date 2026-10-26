@@ -15,7 +15,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = join(root, 'src');
 const dist = join(root, 'dist');
 
-const coreFiles = ['index.js', 'document.js', 'loader.js', 'mount.js', 'page-cache.js', 'range-source.js', 'remote.js', 'text.js', 'worker.js'];
+const coreFiles = ['index.js', 'document.js', 'loader.js', 'mount.js', 'page-cache.js', 'range-source.js', 'remote.js', 'rotation.js', 'text.js', 'worker.js'];
 const reactFiles = ['index.js', 'PdfReader.jsx', 'PdfPage.jsx', 'PdfToolbar.jsx', 'hooks.js'];
 
 // 1. clean the JS output only: dist/wasm comes from emcc

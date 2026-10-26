@@ -290,6 +290,9 @@ export interface ViewerLabels {
   zoomOut?: string;
   fitWidth?: string;
   fitPage?: string;
+  /** Rotation buttons: clockwise and counter-clockwise (both 90° steps). */
+  rotateLeft?: string;
+  rotateRight?: string;
   page?: string;
   of?: string;
   loading?: string;
@@ -304,6 +307,8 @@ export interface ViewerState {
   page: number;
   pageCount: number;
   scale: number;
+  /** View rotation in degrees, 0/90/180/270, on top of each page's own /Rotate. */
+  rotation: number;
   fit: string | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
   error: Error | null;
@@ -316,6 +321,8 @@ export interface ViewerOptions {
   page?: number;
   scale?: number;
   fit?: 'none' | 'width' | 'page' | 'auto';
+  /** Initial view rotation in degrees (0/90/180/270). Default 0. */
+  rotation?: number;
   continuous?: boolean;
   toolbar?: boolean;
   toolbarSlot?: HTMLElement | ((api: { getState(): ViewerState }) => HTMLElement);
@@ -339,6 +346,7 @@ export interface ViewerOptions {
   onReady?: (info: { pageCount: number; metadata: Record<string, string>; document: PdfDocument }) => void;
   onPageChange?: (page: number) => void;
   onScaleChange?: (scale: number) => void;
+  onRotationChange?: (rotation: number) => void;
   onRender?: (info: { page: number; scale: number } & RenderResult) => void;
   onError?: (error: Error) => void;
 }
@@ -355,6 +363,11 @@ export interface ViewerController {
   zoomOut(): void;
   fitWidth(): void;
   fitPage(): void;
+  /** Current view rotation in degrees (0/90/180/270). */
+  readonly rotation: number;
+  setRotation(rotation: number): void;
+  rotateLeft(): void;
+  rotateRight(): void;
   setFile(source: DocumentSource, options?: { page?: number; filename?: string }): Promise<void>;
   setTheme(theme: Record<string, string | number>): void;
   setInverted(on: boolean): void;

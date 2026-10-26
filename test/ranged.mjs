@@ -205,6 +205,64 @@ try {
     console.log(`       no-Range server: page 1 rendered from a single full download (${fallback.fetches} local reads)`);
   });
 
+  await step('a second big file opens after the first is closed', async () => {
+    // The range fetch hook is a per-worker singleton. If a closed ranged
+    // document does not release it, the next open throws "one ranged document
+    // per worker", falls back to inline, and copies the whole file into wasm —
+    // the out-of-memory this path exists to prevent, on the *second* file.
+    const page4 = await newPage(9339, 'about:blank');
+    await page4.setViewport(1280, 900, 1);
+    await page4.goto(`http://127.0.0.1:${port}/examples/vanilla/`);
+    const res = await page4.eval(`(async () => {
+      const { PdfDocument } = await import('/dist/index.js');
+      const spec = { url: '/test/fixtures/large-scan.pdf', size: ${fileSize} };
+      const first = await PdfDocument.open(spec, { worker: true });
+      await first.render(0, { scale: 0.4 });
+      first.close();
+      const second = await PdfDocument.open(spec, { worker: true });
+      const stats = await second.stats();
+      const out = await second.render(1, { scale: 0.4 });
+      const summary = { mode: second.mode, ranged: !!second.ranged, pages: second.pageCount,
+                        heapBytes: stats.heapBytes, w: out.width,
+                        workerError: second.workerError
+                          ? String(second.workerError.message || second.workerError) : null };
+      second.close();
+      return summary;
+    })()`);
+    assert.equal(res.workerError, null, `second open fell back to inline: ${res.workerError}`);
+    assert.equal(res.mode, 'worker');
+    assert.equal(res.ranged, true, 'the second file was copied into wasm instead of read in ranges');
+    assert.equal(res.pages, 240);
+    assert.ok(res.heapBytes < BUDGET_HEAP, `heap ${(res.heapBytes / 1048576).toFixed(0)} MB`);
+    console.log(`       reopen: ranged again, heap ${(res.heapBytes / 1048576).toFixed(0)} MB`);
+    await page4.close();
+  });
+
+  await step('a local File above the threshold is sliced, not copied', async () => {
+    const page5 = await newPage(9339, 'about:blank');
+    await page5.setViewport(1280, 900, 1);
+    await page5.goto(`http://127.0.0.1:${port}/examples/vanilla/`);
+    const res = await page5.eval(`(async () => {
+      const { PdfDocument } = await import('/dist/index.js');
+      const body = await (await fetch('/test/fixtures/large-scan.pdf')).blob();
+      const file = new File([body], 'large-scan.pdf', { type: 'application/pdf' });
+      const doc = await PdfDocument.open(file, { worker: true });
+      const stats = await doc.stats();
+      const out = await doc.render(0, { scale: 0.4 });
+      const res = { mode: doc.mode, ranged: !!doc.ranged, pages: doc.pageCount,
+                    heapBytes: stats.heapBytes,
+                    fetched: stats.source ? stats.source.fetched : -1, w: out.width };
+      doc.close();
+      return res;
+    })()`);
+    assert.equal(res.mode, 'worker');
+    assert.equal(res.ranged, true, 'a 117 MB File was posted whole instead of sliced');
+    assert.ok(res.heapBytes < BUDGET_HEAP, `heap ${(res.heapBytes / 1048576).toFixed(0)} MB`);
+    assert.ok(res.fetched < fileSize, 'the whole file was read');
+    console.log(`       File: ranged from a Blob, ${(res.fetched / 1048576).toFixed(1)} MB fetched`);
+    await page5.close();
+  });
+
   await page2.close();
 } finally {
   chrome.kill();

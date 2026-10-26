@@ -407,6 +407,10 @@ Do not budget these to "match MuPDF"; they are a different product:
 
 ## Known smaller defects (fix opportunistically)
 
+- A rotated *view* (`rotation` / the ⟲ ⟳ buttons) turns the whole layer, so a
+  page whose own `/Rotate` is non-zero and which also has a text layer compounds
+  two rotations; the text layer offset for an intrinsically rotated page is the
+  older, separate gap.
 - Text layer emits the raw code for a font with an embedded CMap and no
   `/ToUnicode` (page 3 of `cjk-cmaps.pdf` extracts "A" for 日). Emit nothing, or
   the CID, rather than a plausible wrong letter.

@@ -18,7 +18,7 @@ const theme = {
   pageShadow: '0 12px 32px rgba(0,0,0,.55)',
 };
 
-function CustomToolbar({ page, pageCount, scale, scroll, onPageChange, onZoom, onFit, onExtract, onToggleScroll }) {
+function CustomToolbar({ page, pageCount, scale, rotation, scroll, onPageChange, onZoom, onFit, onRotate, onExtract, onToggleScroll }) {
   return (
     <div className="wpdf-toolbar" role="toolbar">
       <strong style={{ fontWeight: 600, marginRight: 8 }}>Report</strong>
@@ -43,6 +43,11 @@ function CustomToolbar({ page, pageCount, scale, scroll, onPageChange, onZoom, o
         <button className="wpdf-button" onClick={() => onZoom(scale * 1.25)} aria-label="Zoom in">+</button>
         <button className="wpdf-button" onClick={() => onFit('width')}>fit width</button>
         <button className="wpdf-button" onClick={() => onFit('page')}>fit page</button>
+      </div>
+      <div className="wpdf-toolbar__group">
+        <button className="wpdf-button" onClick={() => onRotate(-1)} aria-label="Rotate counter-clockwise" title="Rotate counter-clockwise">⟲</button>
+        <button className="wpdf-button" onClick={() => onRotate(1)} aria-label="Rotate clockwise" title="Rotate clockwise">⟳</button>
+        {rotation ? <span style={{ minWidth: 36, textAlign: 'center' }}>{rotation}°</span> : null}
       </div>
     </div>
   );
@@ -88,6 +93,8 @@ function App() {
               onPageChange={setPage}
               onZoom={api.onZoom}
               onFit={api.onFit}
+              rotation={api.rotation}
+              onRotate={api.onRotate}
               onExtract={extract}
               scroll={scroll}
               onToggleScroll={() => setScroll((v) => !v)}

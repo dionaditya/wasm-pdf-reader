@@ -281,6 +281,47 @@ try {
     await page.screenshot(join(shots, 'continuous.png'));
   });
 
+  await step('the toolbar turns the view and swaps the page box', async () => {
+    // Rotation is a view transform: the bitmap is not re-rendered, only the box
+    // around it. The buttons are matched by their accessible names, so this also
+    // covers "there is a rotate button in the toolbar".
+    const read = () => page.eval(`(() => {
+      const outer = document.querySelector('.wpdf-page');
+      const turn = document.querySelector('.wpdf-page__turn');
+      return {
+        rotation: window.viewer.rotation,
+        ow: outer.clientWidth, oh: outer.clientHeight,
+        iw: turn.clientWidth, ih: turn.clientHeight,
+        transform: turn.style.transform,
+      };
+    })()`);
+    const click = (label) => page.eval(
+      `[...document.querySelectorAll('.wpdf-button')].find((b) => b.title === '${label}').click()`,
+    );
+
+    const start = await read();
+    assert.equal(start.rotation, 0);
+
+    await click('Rotate clockwise');
+    await page.waitFor('window.viewer.rotation === 90', { label: 'rotated 90' });
+    const cw = await read();
+    assert.equal(cw.ow, cw.ih, 'outer width must be the unrotated height');
+    assert.equal(cw.oh, cw.iw, 'outer height must be the unrotated width');
+    assert.match(cw.transform, /rotate\(90deg\)/);
+
+    await click('Rotate counter-clockwise');
+    await page.waitFor('window.viewer.rotation === 0', { label: 'rotated back' });
+    const back = await read();
+    assert.equal(back.ow, start.ow);
+    assert.equal(back.oh, start.oh);
+
+    await click('Rotate counter-clockwise');
+    await page.waitFor('window.viewer.rotation === 270', { label: 'rotated 270' });
+    assert.match((await read()).transform, /rotate\(270deg\)/);
+    await click('Rotate clockwise');
+    await page.waitFor('window.viewer.rotation === 0', { label: 'rotation restored' });
+  });
+
   // ── visual baseline + page sheet, straight from the library ─────────────
   const hashes = await page.eval(`(async () => {
     const doc = window.viewer.document;

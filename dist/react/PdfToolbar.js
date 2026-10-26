@@ -7,6 +7,8 @@ const toolbarLabels = {
   zoomOut: "Zoom out",
   fitWidth: "Fit width",
   fitPage: "Fit page",
+  rotateLeft: "Rotate counter-clockwise",
+  rotateRight: "Rotate clockwise",
   page: "Page"
 };
 function PdfToolbar(props) {
@@ -17,12 +19,14 @@ function PdfToolbar(props) {
     onPageChange,
     onZoom,
     onFit,
+    onRotate,
     title = "",
     labels = toolbarLabels,
     children,
     tools,
     showPageNav = true,
     showZoom = true,
+    showRotate = true,
     className = ""
   } = props;
   const [draft, setDraft] = useState(String(page + 1));
@@ -129,6 +133,30 @@ function PdfToolbar(props) {
           "aria-label": labels.fitPage,
           onClick: () => onFit?.("page"),
           children: "\u2922"
+        }
+      )
+    ] }),
+    showRotate && /* @__PURE__ */ jsxs("div", { className: "wpdf-toolbar__group", children: [
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          type: "button",
+          className: "wpdf-button",
+          title: labels.rotateLeft,
+          "aria-label": labels.rotateLeft,
+          onClick: () => onRotate?.(-1),
+          children: "\u27F2"
+        }
+      ),
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          type: "button",
+          className: "wpdf-button",
+          title: labels.rotateRight,
+          "aria-label": labels.rotateRight,
+          onClick: () => onRotate?.(1),
+          children: "\u27F3"
         }
       )
     ] }),

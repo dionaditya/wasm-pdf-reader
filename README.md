@@ -214,7 +214,19 @@ with a global symbol dictionary, drawn at 1:1:
 - **The heap is capped at 1 GiB** (`-sMAXIMUM_MEMORY=1073741824`). A 4 GiB
   ceiling looked harmless and broke phones: iOS refuses to grow a module that
   has asked to reserve that much address space, so allocation failed early with
-  a misleading `out of memory`. Beyond ~1 GiB, shrink the file instead.
+  a misleading `out of memory`. The inline path therefore refuses to copy a file
+  larger than **512 MB** (half the ceiling, because a render needs headroom on
+  top of the file) *before* it grows the heap, and says what to do instead:
+
+  - `wasm-pdf-reader: this PDF is 1031.3 MB — too large to copy into the
+    WebAssembly heap (1024.0 MB ceiling). Open it with ranged loading instead…`
+  - `wasm-pdf-reader: this PDF is 120.0 MB and the WebAssembly heap could not
+    grow past 16 MB (its ceiling is 1024.0 MB). Mobile browsers — iOS in
+    particular — cap wasm memory well below that…`
+
+  A file above the copy budget is opened through worker + ranged loading
+  automatically, even if `{ worker: true }` was not passed, because that is the
+  only path that can work.
 - **One page, 40 MP.** A page is rendered whole, so `scale` is bounded by pixel
   count: 40 MP is the ceiling (a 10000×10000 px page is refused). Failures say
   which limit they hit:
@@ -269,13 +281,13 @@ fixture and the four cells where we would score at the bottom are in
 | Annotations (render, links, markup) | 6% | 75% | 95% | 95% |
 | Forms (AcroForm read, fill, save) | 6% | 45% | 90% | 100% |
 | Text extraction and structure | 6% | 78% | 95% | 100% |
-| Viewer UX (toolbar, rail, search, print) | 8% | 72% | 100% | 50% |
+| Viewer UX (toolbar, rail, search, print) | 8% | 78% | 100% | 50% |
 | Accessibility (tagged PDF, screen readers) | 5% | 20% | 90% | 35% |
 | Architecture (worker, ranged loading, cache) | 6% | 85% | 100% | 80% |
 | Ecosystem (release, docs, integrations, testing) | 5% | 30% | 100% | 90% |
-| **Weighted total** | **100%** | **72%** | **95%** | **90%** |
+| **Weighted total** | **100%** | **73%** | **95%** | **90%** |
 
-**Parity: 76 % of pdf.js, 80 % of MuPDF.js** (weighted score 71.8 of 100; pdf.js
+**Parity: 77 % of pdf.js, 81 % of MuPDF.js** (weighted score 72.9 of 100; pdf.js
 94.8, MuPDF.js 90.3). Not a benchmark: a capability count. It says nothing about
 speed on a specific file — that needs the 30-document pilot described in
 [Embedding in a host app](#embedding-in-a-host-app).
@@ -324,7 +336,7 @@ Everything left, priced in points of the same weighted score (that is what the
 | Forms: input overlay, `/AP` regeneration, save/flatten | +2.4 | 85% | 1–2 weeks | a filled field under a real producer's `/AP` still looks empty |
 | Accessibility: tagged structure tree, roles, read order | +2.3 | 65% | 2–3 weeks | the text layer is selectable but not navigable by a screen reader |
 | Ecosystem: publish 0.3.0, docs site, framework examples, CI matrix | +1.8 | 65% | 1 week + ongoing | registry is stale, and there is no fuzzing or disclosure pipeline |
-| Viewer UX: outline panel, rotate, zoom presets, gestures | +1.6 | 92% | 1 week | the chrome is the first thing a reviewer compares against pdf.js |
+| Viewer UX: outline panel, zoom presets, gestures | +1.6 | 92% | 1 week | the chrome is the first thing a reviewer compares against pdf.js |
 | ICC for fills via lcms2 | +1.4 | 90% | 3–4 days | print-derived CMYK art is visibly off next to MuPDF |
 | JPEG 2000: vendor openjpeg's j2k decoder | +1.2 | 100% | 3–5 days | the only output that is garbage rather than merely off |
 | Type1 PFB, vertical CMaps, no-shaped-fallback warning | +1.2 | 92% | 4–6 days | legacy TeX output and Japanese vertical text fall back to a substitute face |
@@ -451,6 +463,7 @@ export default function Preview({ file }) {
 | `file` | document source: `ArrayBuffer`, `Uint8Array`, `Blob`/`File`, URL, `Response` |
 | `page` / `defaultPage` | controlled or uncontrolled page (zero-based) |
 | `scale` / `defaultScale` / `fit` | controlled zoom, or `fit="width" \| "page"` |
+| `defaultRotation` / `onRotationChange` | 90° view rotation on top of each page's `/Rotate`; the toolbar has ⟲ / ⟳ |
 | `continuous` | stack all pages and render them lazily (IntersectionObserver) |
 | `toolbar` | `false`, a node, or `(api) => node` |
 | `components` | replace `Page` and `Toolbar` with your own components |

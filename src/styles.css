@@ -211,6 +211,18 @@
 }
 .wpdf-page__canvas { display: block; border-radius: 2px; }
 
+/* The turning layer: canvas, text layer, links and highlights share one
+   transform, so a rotated view keeps every layer on top of its glyph. Only the
+   children turn — the page box itself stays axis-aligned, which is what the
+   selection overlay (painted in screen coordinates) relies on. */
+.wpdf-page__turn {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
 /* Transparent text layer: the canvas paints, these spans carry the characters
    so selection, copy and the browser's find-in-page work. */
 .wpdf-page__text { position: absolute; inset: 0; }

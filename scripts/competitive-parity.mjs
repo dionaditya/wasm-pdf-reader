@@ -74,8 +74,8 @@ const AREAS = [
   },
   {
     id: 'viewer', name: 'Viewer UX (toolbar, rail, search, print)', weight: 8,
-    scores: { ours: 72, pdfjs: 100, mupdf: 50 },
-    gap: 'no outline panel, page rotation, zoom presets, pinch gestures or full keyboard map',
+    scores: { ours: 78, pdfjs: 100, mupdf: 50 },
+    gap: 'no outline panel, zoom presets, pinch gestures or full keyboard map',
   },
   {
     id: 'a11y', name: 'Accessibility (tagged PDF, screen readers)', weight: 5,

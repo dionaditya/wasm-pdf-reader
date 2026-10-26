@@ -13,6 +13,8 @@ export const toolbarLabels = {
   zoomOut: 'Zoom out',
   fitWidth: 'Fit width',
   fitPage: 'Fit page',
+  rotateLeft: 'Rotate counter-clockwise',
+  rotateRight: 'Rotate clockwise',
   page: 'Page',
 };
 
@@ -24,6 +26,7 @@ export const toolbarLabels = {
  * @param {(page:number)=>void} [props.onPageChange]
  * @param {(scale:number)=>void} [props.onZoom]
  * @param {(fit:'width'|'page')=>void} [props.onFit]
+ * @param {(dir:1|-1)=>void} [props.onRotate]  turn the view 90°, dir = clockwise
  * @param {string} [props.title]
  * @param {Object} [props.labels]
  * @param {React.ReactNode} [props.children]  extra tools, before the spacer
@@ -35,9 +38,9 @@ export const toolbarLabels = {
 export function PdfToolbar(props) {
   const {
     page, pageCount, scale,
-    onPageChange, onZoom, onFit,
+    onPageChange, onZoom, onFit, onRotate,
     title = '', labels = toolbarLabels, children, tools,
-    showPageNav = true, showZoom = true, className = '',
+    showPageNav = true, showZoom = true, showRotate = true, className = '',
   } = props;
 
   const [draft, setDraft] = useState(String(page + 1));
@@ -87,6 +90,14 @@ export function PdfToolbar(props) {
                   aria-label={labels.fitWidth} onClick={() => onFit?.('width')}>⇔</button>
           <button type="button" className="wpdf-button" title={labels.fitPage}
                   aria-label={labels.fitPage} onClick={() => onFit?.('page')}>⤢</button>
+        </div>
+      )}
+      {showRotate && (
+        <div className="wpdf-toolbar__group">
+          <button type="button" className="wpdf-button" title={labels.rotateLeft}
+                  aria-label={labels.rotateLeft} onClick={() => onRotate?.(-1)}>⟲</button>
+          <button type="button" className="wpdf-button" title={labels.rotateRight}
+                  aria-label={labels.rotateRight} onClick={() => onRotate?.(1)}>⟳</button>
         </div>
       )}
       {tools}
