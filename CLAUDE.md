@@ -35,8 +35,9 @@ npm run build:js                # src/js -> dist/, JSX -> JS for React
 node examples/build-react.mjs
 
 # Tests
-node test/unit.mjs              # 67 checks, no browser, ~seconds
-node test/e2e.mjs              # 18 steps in headless Chrome (see §3)
+node test/unit.mjs              # 72 checks, no browser, ~seconds
+node test/e2e.mjs              # 19 steps in headless Chrome (see §3)
+node test/ranged.mjs           # 8 steps: 117 MB fixture, fetch + cache budgets
 node --expose-gc test/memory.mjs
 node test/pages.mjs             # builds _site and serves it under /wasm-pdf-reader/
 scripts/verify_encryption.sh    # needs qpdf; diffs derived keys per revision
@@ -164,7 +165,8 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 
 | file | what it is |
 |---|---|
-| `pdfdoc.cpp` (2.1k lines) | Object model, lexer, xref tables **and** xref streams, `/Prev` chains, incremental updates, xref rebuild, object streams, all filters (Flate/LZW/ASCII85/ASCIIHex/RunLength + PNG/TIFF predictors), standard security handler (RC4-40/128, AES-128, R5/R6 AES-256), page tree, images (DCT via stb, CCITT, JBIG2 hand-off, JPX hand-off), font loading (TT, CFF, CID, Type3, CMaps), text extraction, AcroForm fields, OCG properties, document metadata. Most "the file does not open" bugs live here. |
+| `pdfsource.hpp` | `ByteSource` / `MemorySource` / `CallbackSource`: the byte source the parser reads through (M9.2). `direct()` means the whole file is resident (the pre-M9.2 path, no copies); otherwise `Document::cover()` slides a window. `fetched`/`fetches` are what `test/ranged.mjs` asserts on. |
+| `pdfdoc.cpp` (2.2k lines) | Object model, lexer, xref tables **and** xref streams, `/Prev` chains, incremental updates, xref rebuild, object streams, all filters (Flate/LZW/ASCII85/ASCIIHex/RunLength + PNG/TIFF predictors), standard security handler (RC4-40/128, AES-128, R5/R6 AES-256), page tree, images (DCT via stb, CCITT, JBIG2 hand-off, JPX hand-off), font loading (TT, CFF, CID, Type3, CMaps), text extraction, AcroForm fields, OCG properties, document metadata. Most "the file does not open" bugs live here. |
 | `pdfraster.cpp` (3.1k lines) | The content-stream interpreter and the rasterizer: graphics state, paths, fills/strokes, clips, dashes, text (`showText`), images, form XObjects, tiling patterns, shadings (axial/radial + mesh 4/5), blend modes, transparency groups, annotation painting, OCG visibility. Most "it renders wrong" bugs live here. |
 | `wpdf_api.cpp` | The only wasm-aware code: the C ABI (`_wpdf_*`) that `src/js/document.js` calls, the reusable RGBA bitmap, JSON serialisation of text/links/form/outline/warnings, error strings. Add an export here when JS needs new data. |
 | `pdfcrypto.hpp` (18 KB, header-only) | MD5, SHA-256/384/512, RC4, AES-CBC. The R5/R6 key derivation (Algorithm 2.B) is here — every printable-ASCII boundary is tested by `test/enc_probe.cpp`. |
@@ -188,6 +190,8 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 | file | what it is |
 |---|---|
 | `document.js` (~480 lines) | `PdfDocument`: the public class. Copies the source bytes into wasm (`copyIntoWasm` handles ArrayBuffer/TypedArray/Blob/File/URL/Response), wraps every `_wpdf_*` call, parses JSON payloads, exposes `pageCount`, `metadata`, `warnings`, `outline`, `form`, `render`, `renderToCanvas`, `getText`, `search`, `getLinks`, `boxToCss`, `setField`, `close`. Renders are serialised (one bitmap). |
+| `range-source.js` | The synchronous fetcher a ranged document needs: `FileReaderSync` on Blob slices, or sync XHR with `Range:` in a worker. A 200 response is kept whole and sliced locally. Installs `globalThis.__wpdfRangeFetch`, which `wpdf_js_range_fetch` (EM_JS) calls. |
+| `page-cache.js` | Byte-budgeted LRU of rendered page bitmaps (M9.3): keyed by page+scale (0.01 precision), `pinPage()` so the visible page survives, evicts on bytes not entries. Not a display list. |
 | `remote.js` | Worker mode's main-thread half: `PdfRemoteDocument` (same surface as `PdfDocument`, sync geometry/metadata from the open-time summary, text+links pre-warmed by the render, Promises for `search`/`getPageText`) and the `WorkerPool`. Falls back to inline and records `workerError` when no worker can start. |
 | `worker.js` | The worker entry: one wasm module per worker (single bitmap → one queue), request/response by message id, announces `{op:'ready'}` so a 404 is a fallback instead of a hang, transfers the RGBA buffer back with the page's text and links. |
 | `loader.js` | Module instantiation: one shared instance per page, `wasmUrl`/`wasmBinary`/`module` escape hatches, cache-busted fetch, one retry on `LinkError`, `resetModule()`. |
@@ -206,7 +210,7 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 
 | file | what it is |
 |---|---|
-| `unit.mjs` (660 lines, 67 checks) | The real contract: opens every fixture, asserts page counts, ink in regions, colours, text, links, encryption, CMaps, OCG, forms, patterns, shadings, JBIG2, memory shape. Add one assertion per feature. |
+| `unit.mjs` (~740 lines, 72 checks) | The real contract: opens every fixture, asserts page counts, ink in regions, colours, text, links, encryption, CMaps, OCG, forms, patterns, shadings, JBIG2, memory shape. Add one assertion per feature. |
 | `e2e.mjs` | Browser suite, §3. Also writes the README screenshots. |
 | `cdp.mjs` | Dependency-free Chrome DevTools Protocol client + launcher. |
 | `pages.mjs` | Builds `_site/` and serves it under `/wasm-pdf-reader/` to catch root-absolute path bugs before Pages does. |
@@ -242,7 +246,7 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 | `examples/selftest.html` | Manual smoke page: opens three awkward fixtures and prints ink. |
 | `docs/INTEGRATION.md` | Host integration: asset resolution, bundlers, Next/Vite/webpack/CRA, Vue/Svelte/Angular, React props/hooks, workers, CSP, pitfalls. |
 | `docs/screenshots/` | README images, **regenerated by e2e** — do not hand-craft. |
-| `dist/` | Published output, committed: `index.js`, `document.js`, `loader.js`, `mount.js`, `text.js`, `react/`, `styles.css`, `index.d.ts`, `wasm/pdf-reader.{mjs,wasm}`. `dist/jbig2.js` + `dist/wasm/jbig2/` are unreferenced leftovers and should be deleted, not imitated. |
+| `dist/` | Published output, committed: `index.js`, `document.js`, `loader.js`, `mount.js`, `page-cache.js`, `range-source.js`, `remote.js`, `worker.js`, `text.js`, `react/`, `styles.css`, `index.d.ts`, `wasm/pdf-reader.{mjs,wasm}`. `dist/jbig2.js` + `dist/wasm/jbig2/` are unreferenced leftovers and should be deleted, not imitated. |
 | `build.sh` | emcc invocation (release/`--debug`), the C ABI exports list, `-s DYNAMIC_EXECUTION=0`, `-sMAXIMUM_MEMORY=1073741824`. |
 | `THIRD-PARTY.md`, `LICENSES/` | Licence map + line-count split. Vendoring or generating a file is a licensing change: add the row and, if required, the licence text. |
 | `README.md`, `ROADMAP.md` | Public claims and the ordered gap list. Both are part of every deliverable. |
@@ -274,6 +278,28 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
   before it reaches an anchor: `javascript:` in a link annotation is DOM XSS.
 - **Continuous mode**: append the text/link/selection layers inside `renderInto`,
   and do not vertically centre the page stack (`justify-content: flex-start`).
+- **A ranged document must not be cached in the worker.** Every worker render
+  reply transfers the RGBA buffer, which detaches it; a cached copy would be a
+  detached buffer on the next request (`postMessage: ArrayBuffer at index 0 is
+  already detached`). The worker opens with `pageCache: false` and the
+  main-thread `PdfRemoteDocument` owns the cache.
+- **`setField()` must clear the page cache** or the refill is invisible: the
+  second render is a cache hit and the pixels never change. Same class as the
+  `/AP` repaint trap above.
+- **Window granularity is the whole ballgame for ranged loading.** A fixed 1 MB
+  window fetched 82 MB of the 117 MB fixture because 240 page dicts are 240
+  random jumps; 16 KB growing to 1 MB only on sequential access took the same
+  work to 5.4 MB. If `test/ranged.mjs` regresses on the fetch budget, look at
+  `Document::cover()`'s readahead before anything else.
+- **The worker's geometry snapshot walks every page**, which is what those jumps
+  are. Opening a 240-page ranged document is ~260 sync range requests (~3 s over
+  HTTP). Correct, and the obvious next optimisation — do not mistake it for a
+  leak.
+- **A `first paint` wait must require a real bitmap.** A bare `<canvas>` is
+  300x150, so `width > 100` passes before the first `putImageData` and the ink
+  check then reads an empty (fully "inked") canvas. Worker mode makes that gap
+  observable: wait for `width > 300 && height > 400` in `e2e.mjs` and
+  `pages.mjs`.
 - **Fit-width can run away** if the viewport is a flex item — clamp to ~98 % of the
   window width and set `min-width: 0`.
 - **Worker mode keeps the sync API by snapshot.** `PdfRemoteDocument` captures
@@ -307,7 +333,7 @@ For `M{N}` in `ROADMAP.md`:
 4. `node test/e2e.mjs` green; refresh `test/baseline/visual.json` only if the
    change is intended, and say so in the commit.
 5. `README.md`: capability bullet + the "not supported" paragraph + the *Limits*
-   section if a ceiling moved. Re-measure counts (`67 checks`, `18 e2e steps`,
+   section if a ceiling moved. Re-measure counts (`72 checks`, `19 e2e steps`,
    `ls -l dist/wasm/`) — do not copy the previous README, it accumulates stale
    claims.
 6. `ROADMAP.md`: mark the milestone, record what landed and what did not, keep the

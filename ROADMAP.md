@@ -1,7 +1,8 @@
 # Roadmap — from "reads most PDFs" to MuPDF-grade output
 
-Last verified: 2026-10-26 (wasm 3.1 MB, 1.9 MB gzipped; 67 unit checks; 18 e2e
-steps). Capability parity against pdf.js 6.4.299 / MuPDF.js 1.28.1: **75 % / 79 %**
+Last verified: 2026-10-27 (wasm 3.1 MB, 1.9 MB gzipped; 72 unit checks; 19 e2e
+steps; 8 ranged steps). Capability parity against pdf.js 6.4.299 / MuPDF.js
+1.28.1: **76 % / 80 %**
 weighted, regenerated with `node scripts/competitive-parity.mjs` (the README table
 is that script's output — do not hand-edit it). Working notes for an agent doing
 this work: `CLAUDE.md`.
@@ -54,10 +55,10 @@ the a11y layer. None of them changes the architecture, and each is priced in
 | M6 JPEG 2000 | **broken for most encoders** | OpenJPEG codestreams decode to noise |
 | M7 Type3/Type1/CFF | Type3 + OTTO done | Type1 PFB, vertical (`-V`) CMaps |
 | M8 OCG/forms/outline | done | field repaint under a real `/AP`, no input overlay, no save |
-| M9 architecture | **partial** | M9.1 worker done; ranged loading and the display list are open |
+| M9 architecture | **mostly done** | M9.1 worker, M9.2 ranged loading, M9.3 page cache; the display list is open |
 
-So the remaining work is: **M9.2/M9.3 first** (ranged loading is what unblocks
-large documents, and the worker that makes it useful has landed), then the
+So the remaining work is: **the M9.3 display list** (the page cache landed; the
+record/replay half is what would make a *new* zoom scale cheap), then the
 residues in the order below.
 
 ## Strategy
@@ -238,7 +239,7 @@ radio, choice).
 survives a re-render at another scale.
 *Risk*: scope creep into scripting — do not implement `/AA` JavaScript.
 
-### M9 — Architecture — *partial: M9.1 (worker) landed, M9.2/M9.3 open*
+### M9 — Architecture — *M9.1 + M9.2 done, M9.3 half done (cache yes, display list no)*
 *Why*: it is the last structural gap and the biggest single score gain on the
 comparison table (+3.0 points, the difference between "toy on a 200-page scan" and
 "replacement"). It is also the only item that cannot be bolted on later: the
@@ -292,7 +293,7 @@ Two things this exposed, both fixed in the same change:
   CVE-2025-46206 (mupdf `strip_outline`). Fixed with visited sets + depth/item
   caps; `test/fixtures/outline-cycle.pdf` and three unit checks hold it down.
 
-**M9.2 — Ranged loading (1–2 weeks, parser work).**
+**M9.2 — Ranged loading (1–2 weeks, parser work) — *done*.**
 *Where*: `pdfdoc.cpp` byte access (every `read`/`memcpy` of the source buffer),
 `src/js/document.js` `copyIntoWasm`, and a `fetch` wrapper that issues `Range`
 requests.
@@ -309,7 +310,33 @@ source that fails on any access beyond the fetched window.
 path must not assume the whole buffer is resident. Keep the monolithic path as a
 fallback for `< 16 MB`.
 
-**M9.3 — Display list + page cache with a budget (1 week).**
+*Landed*: `src/cpp/pdfsource.hpp` (`ByteSource` + `MemorySource` +
+`CallbackSource`), `pdfdoc.cpp` reads through it, and `Document::Lex` became an
+offset-tracking lexer that slides a window instead of assuming one contiguous
+buffer. The resident path (`direct()`) is the pre-M9.2 behaviour with no copies,
+so every existing test still exercises the same code; `windowBytes` forces a
+window even for an in-memory file, and `test/unit.mjs` parses 14 fixtures
+through a **2 KB** window asserting identical page count, page-1 pixels and text
+— that is what proves the lexer surgery rather than a lucky fixture.
+
+Measured on the generated 117 MB / 240-page fixture (`scripts/make_large_fixture.py`,
+`npm run test:ranged`): opening, rendering page 1, page 240 and extracting text
+fetched **5.37 MB of 117 MB in 260 range requests**, peak wasm heap **16 MB**
+(acceptance: < 10 MB fetched, < 150 MB heap). A server that ignores `Range` and
+answers 200 is survived by keeping the first full body and slicing it locally.
+
+Two things this cost that are worth remembering:
+- **Window granularity is the whole ballgame.** A fixed 1 MB window fetched
+  82 MB of the same file, because reading 240 page dicts is 240 random jumps and
+  each jump paid 1 MB. The window now starts at 16 KB, doubles while access is
+  sequential (up to 1 MB) and drops back on a jump: same fixture, 5.37 MB.
+- **The worker's page-geometry snapshot walks every page.** That is what the
+  random jumps *are*, and it is also why opening a 240-page ranged document
+  takes ~3 s over HTTP (260 sync XHRs). Batching the page-tree read is the
+  obvious next optimisation; it is not a correctness issue.
+
+**M9.3 — Display list + page cache with a budget (1 week) — *page cache done,
+display list open*.**
 *Where*: `pdfraster.cpp` gains a record/replay split (interpret once into a
 display list, rasterize that), `src/js` gains a byte-budgeted LRU of page bitmaps.
 *Approach*: pair each display list with the scale it was recorded at; replay at
@@ -323,6 +350,29 @@ page < 30 ms; pixel hashes unchanged at the same scale.
 at one scale can look wrong replayed at another. Restrict replay to
 translation-only changes first and re-record otherwise — a wrong fast path is
 worse than a slow correct one.
+
+*Landed (cache half)*: `src/js/page-cache.js` — a byte-budgeted LRU of rendered
+page bitmaps on both document kinds, default budget from
+`navigator.deviceMemory` (8–96 MB), `pageCacheBytes` to override, `pageCache:
+false` to disable, `document.pinPage()` so the visible page survives eviction.
+Accept: a repeat render at a cached scale is a bitmap copy — `test/e2e.mjs`
+measures it at a few milliseconds (gate: < 30 ms) and the pixel baseline is
+unchanged, because the cache returns the same bytes the renderer produced.
+`test/ranged.mjs` sweeps 60 pages of the 117 MB fixture forward and back inside
+a 16 MB budget and asserts the cache never exceeds it and the wasm heap stays
+under 150 MB. Two bugs it introduced and fixed: the worker must **not** cache
+(every reply transfers the RGBA buffer, so a cached copy would be detached by the
+next request), and `setField()` must invalidate the page or a refill is invisible
+(that trap is already the first item in CLAUDE.md's forms notes).
+
+*Not landed*: the display list itself. A cached scale is fast; a **new** scale
+still interprets the content stream from scratch, which is the 30 ms line above
+only for pages already cached. Doing it properly means splitting
+`pdfraster.cpp`'s interpreter from its rasterizer and deciding what may be
+replayed at a different CTM — text (glyph bitmaps), shadings (colour ramp
+sampling) and patterns (tile scale) each break differently. That is a week of
+work with a strong chance of a subtly wrong fast path, so it is priced and left
+open rather than rushed.
 
 Already landed, and not part of the above: `document.outline`, the page rail's
 lazily rendered thumbnails, `document.metadata`, and a print action that

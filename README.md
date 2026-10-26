@@ -112,6 +112,19 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   `test/e2e.mjs` asserts it is actually taken. A worker that cannot start (no
   `Worker`, a 404 on `workerUrl`, a CSP that blocks it) falls back to the inline
   path and reports why on `document.workerError`.
+- **Ranged loading** — a document does not have to be copied into wasm at all:
+  `PdfDocument.open({ url, size }, { worker: true })` (or `{ blob }`) parses
+  straight out of HTTP `Range` requests or Blob slices, with a 16 KB → 1 MB
+  adaptive window. On the 117 MB / 240-page test fixture, opening, drawing page 1,
+  page 240 and extracting text pulls **5.4 MB of 117 MB** and keeps the wasm heap
+  at **16 MB**. A server that ignores `Range` is survived by keeping the first
+  full body and slicing it locally. Requires worker mode, because the reads are
+  synchronous — that is the only way a synchronous lexer can page a file in.
+- **Page cache** — rendered page bitmaps are kept in a byte-budgeted LRU
+  (`pageCacheBytes`, default from `navigator.deviceMemory`, `pageCache: false` to
+  disable), so returning to a scale already rendered is a bitmap copy rather than
+  a re-interpretation. The visible page is pinned and never evicted. A *new*
+  zoom scale still re-renders — that is the missing display list, not the cache.
 - **No network** — the wasm binary loads from your own origin; the file never
   leaves the tab.
 
@@ -123,10 +136,9 @@ Indic), Type 1 PFB fonts (a substitute face is used), shading types 1, 6 and 7
 non-isolated transparency groups (they are composited isolated, which only
 differs when the group relies on the page backdrop), vertical writing (`-V`
 CMaps paint horizontally), XFA and form JavaScript (`/AA`), public-key
-encryption, and ranged/streamed loading (the whole file is resident in wasm
-memory). Ranged loading is not implemented: worker mode moves the work off the
-main thread but the file is still fully resident. Mesh shadings 4 and 5 decode
-but are still experimental — see
+encryption, and a display list (a *new* zoom scale re-interprets the page; the
+page cache only makes a scale you already rendered cheap). Mesh shadings 4 and 5
+decode but are still experimental — see
 [Limits](#limits). Outlines, AcroForm fields (readable and settable in memory)
 and page thumbnails are supported. Annotations render and links are clickable,
 but there is no panel for note text, and a highlight uses alpha rather than a
@@ -181,11 +193,15 @@ with a global symbol dictionary, drawn at 1:1:
 
 ## Limits
 
-- **The whole file is resident.** No ranged loading: the PDF sits in the wasm
-  heap while it is open, plus the parsed objects and, per page, one RGBA bitmap.
-  For text documents that is roughly the file size; scans add the decoded image.
-  Measured: a 78 MB / 16-page PDF of full-page JPEGs opens and renders its first
-  page in ~0.8 s on desktop.
+- **The whole file is resident unless you ask for otherwise.** The inline path
+  copies the PDF into the wasm heap while it is open (plus parsed objects and,
+  per page, one RGBA bitmap — measured: a 78 MB / 16-page JPEG scan opens and
+  draws its first page in ~0.8 s on desktop). `{ worker: true }` plus a ranged
+  source (`{ url, size }` / `{ blob }`) holds a window instead: 16 MB of heap for
+  a 117 MB file, 5.4 MB fetched to draw two distant pages. What is *not* free:
+  the worker still reads every page dict at open to fill its geometry snapshot,
+  which costs ~3 s over HTTP on a 240-page document (one range request per page
+  dict). Batch the page-tree read before shipping that to a slow origin.
 - **The wasm heap only grows.** Emscripten cannot return memory to the OS, so the
   figure you see is a high-water mark for the module's lifetime; tearing the
   module down (`resetModule()`) frees it. `npm run test:memory` asserts it
@@ -254,11 +270,11 @@ fixture and the four cells where we would score at the bottom are in
 | Text extraction and structure | 6% | 78% | 95% | 100% |
 | Viewer UX (toolbar, rail, search, print) | 8% | 72% | 100% | 50% |
 | Accessibility (tagged PDF, screen readers) | 5% | 20% | 90% | 35% |
-| Architecture (worker, ranged loading, cache) | 6% | 60% | 100% | 80% |
+| Architecture (worker, ranged loading, cache) | 6% | 85% | 100% | 80% |
 | Ecosystem (release, docs, integrations, testing) | 5% | 30% | 100% | 90% |
-| **Weighted total** | **100%** | **71%** | **95%** | **90%** |
+| **Weighted total** | **100%** | **72%** | **95%** | **90%** |
 
-**Parity: 75 % of pdf.js, 79 % of MuPDF.js** (weighted score 70.9 of 100; pdf.js
+**Parity: 76 % of pdf.js, 80 % of MuPDF.js** (weighted score 71.8 of 100; pdf.js
 94.8, MuPDF.js 90.3). Not a benchmark: a capability count. It says nothing about
 speed on a specific file — that needs the 30-document pilot described in
 [Embedding in a host app](#embedding-in-a-host-app).
@@ -270,7 +286,7 @@ speed on a specific file — that needs the 30-document pilot described in
   A contract, an invoice, a scanned letter: a swap is defensible today.
 - **The losses cluster in three places.** *Visually heavy* documents (shadings
   40 %, ICC 70 %, JPX 85 %), *interactive* ones (forms 45 %, annotations 75 %),
-  and *non-visual* ones (accessibility 20 %, architecture 60 %).
+  and *non-visual* ones (accessibility 20 %, architecture 85 %).
 - **MuPDF.js loses where pdf.js wins and vice versa.** MuPDF.js has no viewer at
   all (50 % viewer UX, 35 % a11y) but beats everything on decoding and can edit
   and write. pdf.js still leads on accessibility, a display list and ranged
@@ -298,11 +314,11 @@ speed on a specific file — that needs the 30-document pilot described in
 ### Where it is behind, and by how much
 
 Everything left, priced in points of the same weighted score (that is what the
-`+points` column adds to 70.9):
+`+points` column adds to 71.8):
 
 | Remaining item | +points | Result | Effort | Why it matters |
 | --- | ---: | ---: | --- | --- |
-| Ranged loading + display list (M9.2/M9.3) | +2.4 | 100% | 2–3 weeks | whole-file residency, no eviction; the worker that unblocks the work has landed |
+| Display list (M9.3 remainder) | +0.9 | 94% | ~1 week | a new zoom scale still re-interprets the page; the cache only covers scales already rendered |
 | Shadings 1/6/7 and a verified 4/5 | +2.8 | 95% | 3–5 days | gradient-heavy marketing PDFs currently lose their background |
 | Forms: input overlay, `/AP` regeneration, save/flatten | +2.4 | 85% | 1–2 weeks | a filled field under a real producer's `/AP` still looks empty |
 | Accessibility: tagged structure tree, roles, read order | +2.3 | 65% | 2–3 weeks | the text layer is selectable but not navigable by a screen reader |
@@ -314,7 +330,7 @@ Everything left, priced in points of the same weighted score (that is what the
 | Annotations: note panel, multiply highlights, authoring | +0.9 | 90% | 1 week | review workflows stop at "markup renders" |
 | Text structure: lines/blocks, `/ToUnicode` policy, document index | +0.8 | 92% | 3–4 days | every pdf.js consumer expects line/block grouping |
 | Encryption: public-key handler, onPassword retry | +0.3 | 97% | 2–3 days | rare, but a hard fail when a host meets a `/Adobe.PubSec` file |
-| **All of the above** | **+18.9** | **90%** | | **95 % of pdf.js, 100 % of MuPDF.js on this weighting** |
+| **All of the above** | **+17.4** | **90%** | | **95 % of pdf.js, 100 % of MuPDF.js on this weighting** |
 
 Two things do not move with any of that: **writing** (editing, redaction,
 signing) and **full accessibility certification**. The first is a declared
@@ -470,7 +486,14 @@ assets can vendor it with no build step:
 ## API
 
 ```js
-PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename, password })
+PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename, password,
+                           worker, workerUrl, workerFactory,
+                           pageCache, pageCacheBytes })
+  .openRanged({ url, size } | { blob }, opts)        // no copy into wasm (M9.2)
+  .mode                            // 'inline' | 'worker'
+  .isWorker                        // boolean
+  .workerError                     // Error | null — why a worker fallback happened
+  .ranged                          // true when the file is read on demand
   .pageCount                       // number
   .metadata                        // { Title, Author, Subject, Producer, ... }
   .warnings                        // ["rebuilt xref", ...]
@@ -478,12 +501,25 @@ PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename, password })
   .render(i, { scale, dpr, pixelTransform, stats })  // { imageData, width, height, ... }
   .renderToCanvas(canvas, i, opts)
   .getText(i)                      // [{ text, x0, y0, x1, y1, ox, oy, adv, fs }]
+  .loadText(i) / .loadLinks(i)     // async, for worker documents
   .getPageText(i) / .getAllText()
   .getLinks(i)                     // [{ x0, y0, x1, y1, uri?, page? }]
   .search(query, { caseSensitive, limit, pages })    // [{ page, index, length, line, rects }]
   .boxToCss(box, i, scale)         // for overlays
+  .pinPage(i, scale, dpr)          // keep this bitmap across cache eviction
+  .cacheStats                      // { entries, bytes, budget, hits, misses, evictions }
+  .sourceStats                     // { fetched, fetches, windowBytes }
+  .clearPageCache()
   .close()
 ```
+
+A worker document (`open(..., { worker: true })`) has the same shape, except that
+`search`, `setField`, `getPageText` and `getAllText` return Promises, and
+`getText`/`getLinks` are only warm for a page that has been rendered (use
+`loadText`/`loadLinks` otherwise). `doc.stats()` reports the worker's wasm heap
+and how many bytes the parser actually read. A ranged source
+(`{ url, size }` / `{ blob }`) additionally requires `worker: true` — see
+[docs/INTEGRATION.md](docs/INTEGRATION.md#ranged-loading-big-files-no-copy).
 
 Full types ship with the package (`dist/index.d.ts`, `dist/react/index.d.ts`).
 
@@ -521,9 +557,10 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (67 checks)
-npm run test:e2e      # headless Chrome: demos, screenshots, pixel baseline
+npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (72 checks)
+npm run test:e2e      # headless Chrome: 19 steps — both demos, worker mode, cache, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
+npm run test:ranged   # 117 MB fixture: ranged open, fetch budget, cache budget (8 steps)
 npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus
 scripts/verify_encryption.sh   # keys vs qpdf for every revision (needs qpdf)
 npm run test:visual   # rewrite the pixel baseline after an intended change
@@ -555,13 +592,15 @@ coverage and navigation, hashes each page bitmap, and writes the screenshots in
 
 ```
 src/cpp/            reader + rasterizer, CFF/Type2, JPEG 2000, annotations, C ABI
+src/cpp/pdfsource.hpp  byte source: whole file in memory, or a slid window
 src/cpp/jbig2gen/   PDFium JBIG2/fax decoder, generated from wasm by wasm2c
-src/js/             loader, PdfDocument, vanilla viewer, text helpers
+src/js/             loader, PdfDocument, worker + range source, page cache,
+                    vanilla viewer, text helpers
 src/js/react/       PdfReader, PdfPage, PdfToolbar, hooks
 src/types/          hand-written .d.ts for both entry points
-scripts/            fixture generator, JS build, demo build
-examples/           vanilla and React demos + static server
-test/               unit, e2e (CDP), Pages checks, fixtures, baseline
+scripts/            fixture generators, JS build, demo build, bench
+examples/           vanilla and React demos + static server (Range-aware)
+test/               unit, e2e (CDP), Pages, ranged, fixtures, baseline
 dist/               published output (ESM + wasm)
 ```
 

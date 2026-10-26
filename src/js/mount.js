@@ -590,6 +590,8 @@ export function mountPdfReader(target, options = {}) {
     const next = Math.max(0, Math.min(state.doc.pageCount - 1, index | 0));
     if (next === state.page && !opts.continuous) return;
     state.page = next;
+    // the page on screen must survive cache eviction
+    state.doc.pinPage?.(next, effectiveScale(), opts.dpr ?? window.devicePixelRatio ?? 1);
     syncThumbsActive();
     if (opts.continuous) {
       const target = state.pageEls[next];
@@ -646,6 +648,7 @@ export function mountPdfReader(target, options = {}) {
       state.page = Math.max(0, Math.min(doc.pageCount - 1, page));
       if (state.fit === 'auto') state.fit = 'width';
       state.status = 'ready';
+      doc.pinPage?.(state.page, effectiveScale(), opts.dpr ?? window.devicePixelRatio ?? 1);
       setOverlay(null);
       state.pageEls = [];
       opts.continuous ? await renderContinuous() : await renderSingle();

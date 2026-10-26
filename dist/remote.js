@@ -20,6 +20,8 @@
 // A host that needs the sync API keeps using the default inline path.
 
 import { boxToCss, itemsToText } from './text.js';
+import { isRangeSpec } from './range-source.js';
+import { PageCache } from './page-cache.js';
 
 const READY_TIMEOUT = 15000;
 
@@ -172,6 +174,13 @@ async function openPayload(source, options) {
     wasmUrl: options.wasmUrl || '',
   };
   let transfer = [];
+  if (isRangeSpec(source)) {
+    // Not copied: the worker pulls byte ranges itself, from a Blob slice or an
+    // HTTP Range request. This is the whole point of M9.2.
+    payload.range = { url: source.url || '', blob: source.blob || null, size: Number(source.size) || 0 };
+    payload.filename = payload.filename || source.url || (source.blob && source.blob.name) || '';
+    return { payload, transfer };
+  }
   if (typeof Blob !== 'undefined' && source instanceof Blob) {
     payload.blob = source;                       // structured clone shares the bytes
     payload.filename = payload.filename || source.name || '';
@@ -218,7 +227,7 @@ export async function openRemote(source, options = {}) {
   try {
     const { payload, transfer } = await openPayload(source, options);
     const opened = await client.call('open', payload, transfer);
-    return new PdfRemoteDocument(pool, client, opened.docId, opened.summary);
+    return new PdfRemoteDocument(pool, client, opened.docId, opened.summary, options);
   } catch (err) {
     pool.release();
     throw err;
@@ -227,7 +236,7 @@ export async function openRemote(source, options = {}) {
 
 /** A document whose wasm instance lives in a worker. */
 export class PdfRemoteDocument {
-  constructor(pool, client, docId, summary) {
+  constructor(pool, client, docId, summary, options = {}) {
     this._pool = pool;
     this._client = client;
     this._id = docId;
@@ -236,6 +245,11 @@ export class PdfRemoteDocument {
     this._textCache = new Map();
     this._linkCache = new Map();
     this._sizeCache = new Map();
+    this._cache = new PageCache({
+      enabled: options.pageCache !== false,
+      budgetBytes: options.pageCacheBytes,
+    });
+    this._visiblePage = 0;
     this.filename = summary.filename || '';
   }
 
@@ -244,6 +258,18 @@ export class PdfRemoteDocument {
 
   /** True for a worker-backed document (the viewer/e2e probes this). */
   get isWorker() { return true; }
+
+  /** True when the file was never copied into wasm (ranged source, M9.2). */
+  get ranged() { return !!this._summary.ranged; }
+
+  /**
+   * Bytes the engine actually read, and the worker's wasm heap size.
+   * @returns {Promise<{source: {fetched:number, fetches:number, windowBytes:number}|null, heapBytes:number}>}
+   */
+  stats() {
+    this._assertOpen();
+    return this._client.call('stats', { docId: this._id });
+  }
 
   get pageCount() {
     this._assertOpen();
@@ -278,6 +304,13 @@ export class PdfRemoteDocument {
     const dpr = options.dpr ?? 1;
     const deviceScale = scale * dpr;
     const size = this.getPageSize(index);
+
+    const cacheable = this._cache.enabled && typeof options.pixelTransform !== 'function';
+    if (cacheable) {
+      const hit = this._cache.get(index, deviceScale);
+      if (hit) return hit;
+    }
+
     const res = await this._client.call('render', {
       docId: this._id, page: index, scale: deviceScale, stats: !!options.stats,
     });
@@ -297,7 +330,7 @@ export class PdfRemoteDocument {
       });
       if (replaced && replaced.data) imageData = replaced;
     }
-    return {
+    const result = {
       imageData,
       width: res.width,
       height: res.height,
@@ -306,7 +339,21 @@ export class PdfRemoteDocument {
       scale,
       stats: res.stats,
     };
+    if (cacheable) this._cache.set(index, deviceScale, result, PageCache.key(this._visiblePage, deviceScale));
+    return result;
   }
+
+  /** Tell the cache which page must survive eviction (the one on screen). */
+  pinPage(index, scale = 1.5, dpr = 1) {
+    this._visiblePage = index;
+    this._cache.pin(index, scale * dpr);
+  }
+
+  /** Page-cache counters: {entries, bytes, budget, hits, misses, evictions}. */
+  get cacheStats() { return this._cache.stats(); }
+
+  /** Drop cached bitmaps (theme change, memory pressure). */
+  clearPageCache() { this._cache.clear(); }
 
   async renderToCanvas(canvas, index, options = {}) {
     const out = await this.render(index, options);
@@ -367,7 +414,9 @@ export class PdfRemoteDocument {
   /** Resolves to true when the field was found. */
   setField(name, value) {
     this._assertOpen();
-    return this._client.call('field', { docId: this._id, name: String(name), value: String(value) });
+    return this._client
+      .call('field', { docId: this._id, name: String(name), value: String(value) })
+      .then((ok) => { if (ok) this._cache.clear(); return ok; });
   }
 
   boxToCss(box, index, scale) {
@@ -381,6 +430,7 @@ export class PdfRemoteDocument {
     this._textCache.clear();
     this._linkCache.clear();
     this._sizeCache.clear();
+    this._cache.clear();
     // The last document closing takes the worker with it, so do not spend a
     // round trip on the close message that terminate() would race.
     const shared = this._pool.docs > 1;

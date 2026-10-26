@@ -6,6 +6,9 @@ _site/
 examples/react/bundle.js
 *.log
 
+# generated on demand by test/ranged.mjs (117 MB)
+test/fixtures/large-scan.pdf
+
 # publish artefacts
 *.tgz
 
