@@ -79,6 +79,9 @@ function button(className, label, text) {
  * @param {Object} [options.theme] CSS variable overrides
  * @param {ViewerLabels} [options.labels]
  * @param {Function} [options.pixelTransform] passed to PdfDocument.render
+ * @param {boolean|'strict'} [options.worker] parse and rasterize in a Web Worker
+ * @param {string} [options.workerUrl] URL of dist/worker.js (bundled hosts must set it)
+ * @param {Function} [options.workerFactory] (options) => Worker, for custom worker builds
  * @param {boolean} [options.invert=false] dark-mode page filter
  * @param {Function} [options.onReady]
  * @param {Function} [options.onPageChange]
@@ -311,12 +314,13 @@ export function mountPdfReader(target, options = {}) {
       emit('onRender', { page: state.page, scale, ...out });
       if (opts.textLayer !== false) {
         const size = state.doc.getPageSize(state.page);
-        const textEl = buildTextLayer(state.doc.getText(state.page), {
+        const text = await loadText(state.page);
+        if (token !== renderToken || destroyed) return;
+        pageEl.appendChild(buildTextLayer(text, {
           scale, height: size.height, boxY0: size.boxY0,
-        });
-        pageEl.appendChild(textEl);
+        }));
       }
-      const linkEl = linkLayer(pageEl, state.page);
+      const linkEl = await linkLayer(pageEl, state.page);
       if (linkEl) pageEl.appendChild(linkEl);
       selectionLayer(pageEl);
       const hl = opts.highlights?.(state.page, scale) || [];
@@ -390,11 +394,13 @@ export function mountPdfReader(target, options = {}) {
       // text and link layers have to be attached here, not once up front.
       if (opts.textLayer !== false) {
         const size = state.doc.getPageSize(index);
-        pageEl.appendChild(buildTextLayer(state.doc.getText(index), {
+        const text = await loadText(index);
+        if (token !== renderToken || destroyed) return;
+        pageEl.appendChild(buildTextLayer(text, {
           scale, height: size.height, boxY0: size.boxY0,
         }));
       }
-      const linkEl = linkLayer(pageEl, index);
+      const linkEl = await linkLayer(pageEl, index);
       if (linkEl) pageEl.appendChild(linkEl);
       selectionLayer(pageEl);
       const hl = opts.highlights?.(index, scale) || [];
@@ -506,10 +512,21 @@ export function mountPdfReader(target, options = {}) {
   viewport.addEventListener('scroll', queueSelectionPaint, { passive: true });
   window.addEventListener('resize', queueSelectionPaint);
 
+  // Text and link data for a page. Both are cached by the render that drew it,
+  // so this is usually synchronous even for a worker-backed document; the await
+  // is what makes the first paint correct instead of racing the cache.
+  async function loadText(index) {
+    try { return await state.doc.loadText(index); } catch { return []; }
+  }
+
+  async function loadLinks(index) {
+    try { return await state.doc.loadLinks(index); } catch { return []; }
+  }
+
   // Link annotations: every /Link with a URI or an internal /GoTo becomes a
   // transparent anchor over the page bitmap.
-  function linkLayer(pageEl, pageIndex) {
-    const links = state.doc.getLinks(pageIndex);
+  async function linkLayer(pageEl, pageIndex) {
+    const links = await loadLinks(pageIndex);
     if (!links.length) return null;
     const scale = effectiveScale();
     const layer = el('div', 'wpdf-page__overlay');

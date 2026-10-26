@@ -49,6 +49,9 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     wasmUrl,
     wasmBinary,
     module,
+    worker,
+    workerUrl,
+    workerFactory,
     renderLoading,
     renderError,
     renderEmpty,
@@ -73,7 +76,7 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
   const rootRef = useRef(null);
   const { document: doc, status, error, pageCount, metadata, warnings, reload } = usePdfDocument(
     file,
-    { wasmUrl, wasmBinary, module, filename: file?.name }
+    { wasmUrl, wasmBinary, module, worker, workerUrl, workerFactory, filename: file?.name }
   );
   const page = pageProp !== void 0 ? pageProp : innerPage;
   const controlledScale = scaleProp !== void 0 ? scaleProp : innerScale;
@@ -151,9 +154,11 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     fitWidth: () => fitTo("width"),
     fitPage: () => fitTo("page"),
     reload,
-    /** Plain text for a page (extracts and caches it in wasm). */
+    /** Plain text for a page (extracts and caches it in wasm). A worker-backed
+     *  document returns a Promise, so `await` it when `worker` is set. */
     pageText: (i = page) => doc?.getPageText(i) ?? "",
-    /** All matches for a query: {page, index, length, line, rects}. */
+    /** All matches for a query: {page, index, length, line, rects}. Returns a
+     *  Promise on a worker-backed document. */
     search: (q, o) => doc?.search(q, o) ?? []
   }), [doc, page, effectiveScale, pageCount, goToPage, setScale, fitTo, reload]);
   const onKeyDown = useCallback((ev) => {
@@ -182,14 +187,34 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
       fitTo("width");
     }
   }, [goToPage, page, pageCount, setScale, effectiveScale, fitTo]);
-  const searchHits = useMemo(() => {
-    if (!doc || !search) return [];
-    try {
-      return doc.search(search);
-    } catch {
-      return [];
+  const [searchHits, setSearchHits] = useState([]);
+  const searchKey = typeof search === "string" ? search : JSON.stringify(search ?? null);
+  useEffect(() => {
+    if (!doc || !search) {
+      setSearchHits([]);
+      return void 0;
     }
-  }, [doc, search]);
+    let alive = true;
+    let result;
+    try {
+      result = doc.search(search);
+    } catch {
+      setSearchHits([]);
+      return void 0;
+    }
+    if (result && typeof result.then === "function") {
+      result.then((hits) => {
+        if (alive) setSearchHits(hits || []);
+      }).catch(() => {
+        if (alive) setSearchHits([]);
+      });
+    } else {
+      setSearchHits(result || []);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [doc, searchKey]);
   const overlayFor = useCallback((index) => {
     const parts = [];
     const rects = [];

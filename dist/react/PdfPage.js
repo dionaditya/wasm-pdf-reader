@@ -35,15 +35,35 @@ function PdfPage(props) {
   const textRef = useRef(null);
   useEffect(() => {
     const host = textRef.current;
-    if (!host) return;
+    if (!host) return void 0;
     host.replaceChildren();
-    if (!doc || textLayer === false) return;
+    if (!doc || textLayer === false) return void 0;
     const size2 = doc.getPageSize(page);
-    host.appendChild(buildTextLayer(doc.getText(page), {
-      scale,
-      height: size2.height,
-      boxY0: size2.boxY0
-    }));
+    const paint = (items) => {
+      if (!items || !items.length) return;
+      host.replaceChildren(buildTextLayer(items, {
+        scale,
+        height: size2.height,
+        boxY0: size2.boxY0
+      }));
+    };
+    let alive = true;
+    let sync = null;
+    try {
+      sync = doc.getText(page);
+    } catch {
+      sync = null;
+    }
+    if (sync && sync.length) paint(sync);
+    else if (typeof doc.loadText === "function") {
+      doc.loadText(page).then((items) => {
+        if (alive) paint(items);
+      }).catch(() => {
+      });
+    }
+    return () => {
+      alive = false;
+    };
   }, [doc, page, scale, textLayer, width, height]);
   const reported = useRef(null);
   useEffect(() => {
