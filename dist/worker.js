@@ -46,6 +46,7 @@ function summarise(doc, filename) {
     form: doc.form,
     warnings: doc.warnings,
     filename: filename || doc.filename || '',
+    ranged: !!doc.ranged,
   };
 }
 
@@ -55,13 +56,20 @@ function message(err) {
 
 const handlers = {
   async open(payload) {
-    const source = payload.blob || payload.bytes;
-    const doc = await PdfDocument.open(source, {
+    const common = {
       filename: payload.filename || '',
       password: payload.password || '',
       wasmUrl: payload.wasmUrl || undefined,
       wasmBinary: payload.wasmBinary || undefined,
-    });
+      // No page cache here: every render reply transfers the RGBA buffer to the
+      // main thread, which detaches it — a cached copy would be a detached
+      // buffer by the next request. The main-thread document owns the cache.
+      pageCache: false,
+    };
+    // `range` means: the file was never copied here, pull byte ranges on demand.
+    const doc = payload.range
+      ? await PdfDocument.openRanged(payload.range, common)
+      : await PdfDocument.open(payload.blob || payload.bytes, common);
     const docId = ++nextDocId;
     docs.set(docId, doc);
     return { result: { docId, summary: summarise(doc, payload.filename) } };
@@ -106,6 +114,11 @@ const handlers = {
 
   async field(payload) {
     return { result: need(payload.docId).setField(payload.name, payload.value) };
+  },
+
+  async stats(payload) {
+    const doc = need(payload.docId);
+    return { result: { source: doc.sourceStats || null, heapBytes: doc.Module ? doc.Module.HEAPU8.length : 0 } };
   },
 
   async close(payload) {

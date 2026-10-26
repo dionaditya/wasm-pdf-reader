@@ -90,7 +90,15 @@ try {
   const ready = await page.waitFor('window.__demoReady && true', { label: 'viewer boot' })
     .then(() => page.eval('window.__demoReady'));
 
-  await page.waitFor('document.querySelector(".wpdf-page canvas")?.width > 100', { label: 'first paint' });
+  // A bare <canvas> is 300x150 before the first putImageData, and worker mode
+  // makes that gap observable: waiting on a width alone reads an empty bitmap.
+  await page.waitFor(
+    `(() => {
+      const c = document.querySelector('.wpdf-page canvas');
+      return !!c && c.width > 300 && c.height > 400;
+    })()`,
+    { label: 'first paint' },
+  );
 
   await page.eval(`window.__ink = async () => {
     const c = document.querySelector('.wpdf-page canvas');
@@ -218,6 +226,30 @@ try {
       return { w: h.width, h: h.height };
     })()`);
     assert.ok(box.w > 20 && box.h > 3, `highlight looks empty: ${JSON.stringify(box)}`);
+  });
+
+  await step('a cached page re-lays out in under 30 ms', async () => {
+    // M9.3: the second visit to a scale is a bitmap copy, not a re-render. This
+    // is what makes zoom-out/zoom-back feel instant on a heavy page.
+    const res = await page.eval(`(async () => {
+      const doc = window.viewer.document;
+      const scale = 1.6;
+      const first = await doc.render(0, { scale });          // miss: rasterize
+      await doc.render(0, { scale: 0.9 });                   // a second entry
+      const hitsBefore = doc.cacheStats.hits;
+      const t0 = performance.now();
+      const again = await doc.render(0, { scale });          // hit: copy
+      const ms = performance.now() - t0;
+      return {
+        ms, hit: doc.cacheStats.hits > hitsBefore,
+        same: again.width === first.width && again.height === first.height,
+        cache: doc.cacheStats,
+      };
+    })()`);
+    assert.equal(res.hit, true, 'the repeat render did not come from the cache');
+    assert.equal(res.same, true, 'cached bitmap has the wrong size');
+    assert.ok(res.ms < 30, `cached re-layout took ${res.ms.toFixed(1)} ms`);
+    assert.ok(res.cache.bytes <= res.cache.budget, 'cache is over its byte budget');
   });
 
   await page.screenshot(join(shots, 'search.png'));

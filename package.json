@@ -62,8 +62,10 @@
     "test:visual": "node test/e2e.mjs --update-baseline",
     "test:pages": "node test/pages.mjs",
     "test:memory": "node --expose-gc test/memory.mjs",
-    "test:all": "npm test && npm run test:e2e && npm run test:pages",
-    "prepublishOnly": "npm run build:js && npm run test"
+    "test:all": "npm test && npm run test:e2e && npm run test:pages && npm run test:ranged",
+    "prepublishOnly": "npm run build:js && npm run test",
+    "test:ranged": "node test/ranged.mjs",
+    "fixture:large": "python3 scripts/make_large_fixture.py"
   },
   "peerDependencies": {
     "react": ">=17"

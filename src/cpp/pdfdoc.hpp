@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "cmap.hpp"
+#include "pdfsource.hpp"
 
 #include "cfffont.hpp"
 
@@ -110,7 +111,37 @@ struct Font {
 };
 
 struct Document {
-    std::string buf;
+    // ── byte access (M9.2) ───────────────────────────────────────────────
+    // The file is read through a ByteSource. When the source is wholly
+    // resident (the in-memory path every other test uses) `direct()` gives one
+    // pointer to all of it and nothing is ever copied. Otherwise the parser
+    // works inside `win`, a window that slides as it walks forward, and only
+    // `windowBytes` of the file is in wasm memory at a time.
+    std::unique_ptr<ByteSource> src;
+    std::vector<uint8_t> win;
+    size_t winOff = 0;
+    size_t windowBytes = 16u << 10;     // current readahead; grows on sequential access
+
+    size_t fileSize() const { return src ? src->size() : 0; }
+    /// Whole-file pointer when the source is resident, else nullptr.
+    const uint8_t* directBase() const { return src ? src->direct() : nullptr; }
+    const uint8_t* winBase() const { return (const uint8_t*)win.data(); }
+    /// Make [off, off+need) contiguous and resident. False when past EOF.
+    bool cover(size_t off, size_t need);
+    /// One byte at an absolute offset (fetches a window if needed), or -1.
+    int byteAt(size_t off);
+    /// Copy [off, off+len) out of the source.
+    std::string readBytes(size_t off, size_t len);
+    const uint8_t* residentBase() const;
+    size_t residentOff() const;
+    size_t residentSize() const;
+    /// Offset of `p` inside the resident map.
+    long absOff(const uint8_t* p) const;
+    /// First occurrence of `needle` at or after `from`, or std::string::npos.
+    /// Streams past the file in chunks, so it works on a windowed source.
+    size_t findForward(size_t from, const char* needle, size_t nl);
+    bool loadSource(std::unique_ptr<ByteSource> s);
+
     std::map<int, int> objNumToStm;        // object streams: num -> container obj num
     std::map<int, long> xref;              // num -> byte offset (>=0) or -1 (in object stream)
     std::map<int, ObjP> cache;
@@ -119,6 +150,7 @@ struct Document {
     std::vector<std::string> warnings;
     std::string error;
     bool  loaded = false;
+    bool  windowForced = false;         // tests: force sliding even when resident
 
     // Password to try against the Standard security handler (user, else owner).
     std::string password;
@@ -133,6 +165,7 @@ struct Document {
     int   depth = 0;
 
     bool load(const uint8_t* data, size_t len);
+    bool loadWindowed(const uint8_t* data, size_t len, size_t windowBytes);
     bool setupEncryption(const ObjP& enc);
     ObjP resolve(const ObjP& o);
     ObjP obj(int num);
@@ -188,7 +221,7 @@ struct Document {
     struct Lex;
     ObjP parseObjectAt(long off, bool* ok);
     ObjP objFromObjectStream(int stmNum, int wantNum);
-    long scanObjectOffset(int num) const;
+    long scanObjectOffset(int num);
     bool  parseXref(long off, int depth);
     void  reconstructXref();
     std::map<std::string, std::shared_ptr<Font>> fontCache;

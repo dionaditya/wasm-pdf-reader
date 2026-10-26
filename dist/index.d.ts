@@ -50,6 +50,10 @@ export interface LinkAnnotation {
 }
 
 export interface ModuleOptions extends WorkerOptions {
+  /** Keep rendered page bitmaps in a byte-budgeted LRU. Default true. */
+  pageCache?: boolean;
+  /** Cache budget in bytes (default: from navigator.deviceMemory, 8–96 MB). */
+  pageCacheBytes?: number;
   /** URL of pdf-reader.wasm; defaults to the file next to the JS glue. */
   wasmUrl?: string;
   /** Pre-fetched wasm bytes, for CSP or offline use. */
@@ -79,6 +83,19 @@ export interface WorkerOptions {
 export interface OpenOptions extends ModuleOptions, WorkerOptions {
   filename?: string;
   password?: string;
+}
+
+/**
+ * A document the engine reads on demand instead of copying into wasm (M9.2).
+ * Requires `{ worker: true }`: the reads are synchronous.
+ */
+export interface RangeSpec {
+  /** HTTP(S) URL serving `Range: bytes=` requests (a 200 is also handled). */
+  url?: string;
+  /** Or a Blob/File to slice locally in the worker. */
+  blob?: Blob;
+  /** Total size in bytes. Required for `url`; taken from `blob` otherwise. */
+  size?: number;
 }
 
 export type DocumentSource =
@@ -129,9 +146,13 @@ export declare class PdfDocument {
   ): Promise<PdfDocument>;
   /** Worker mode: the engine runs off the main thread (see PdfRemoteDocument). */
   static open(
-    source: DocumentSource,
+    source: DocumentSource | RangeSpec,
     options: OpenOptions & { worker: true | 'strict' },
   ): Promise<PdfRemoteDocument>;
+
+  /** Parse straight out of Range requests / Blob slices — no copy into wasm.
+   *  Worker-only, because the parser's reads are synchronous. */
+  static openRanged(spec: RangeSpec, options?: OpenOptions): Promise<PdfDocument>;
 
   /** Which path this document runs on. */
   readonly mode: 'inline';
@@ -158,8 +179,25 @@ export declare class PdfDocument {
   getText(index: number): TextItem[];
   /** Async form of getText, so one call site works on both document kinds. */
   loadText(index: number): Promise<TextItem[]>;
-  /** Async form of getLinks. */
+  /** Async form of `getLinks`. */
   loadLinks(index: number): Promise<LinkAnnotation[]>;
+
+  /** Bytes the parser actually pulled (ranged sources) and the window size. */
+  readonly sourceStats: {
+    fetched: number; fetches: number; windowBytes: number;
+  } | null;
+
+  /** Page-cache counters, or null when the cache is disabled. */
+  readonly cacheStats: {
+    entries: number; bytes: number; budget: number;
+    hits: number; misses: number; evictions: number;
+  } | null;
+
+  /** Keep this page resident across cache eviction (the one on screen). */
+  pinPage(index: number, scale?: number, dpr?: number): void;
+
+  /** Drop cached bitmaps (after a theme change, or under memory pressure). */
+  clearPageCache(): void;
   getPageText(index: number, options?: { lineSeparator?: string }): string;
   getAllText(options?: { lineSeparator?: string }): string[];
   search(query: string, options?: {
@@ -202,6 +240,18 @@ export interface PdfRemoteDocument {
     index: number,
     options?: RenderOptions & { cssScale?: boolean },
   ): Promise<RenderResult>;
+
+  /** Bytes the parser actually pulled, and the worker's wasm heap. */
+  stats(): Promise<{ source: { fetched: number; fetches: number; windowBytes: number } | null; heapBytes: number }>;
+  /** Page-cache counters. */
+  readonly cacheStats: {
+    entries: number; bytes: number; budget: number;
+    hits: number; misses: number; evictions: number;
+  };
+  pinPage(index: number, scale?: number, dpr?: number): void;
+  clearPageCache(): void;
+  /** True when the file was never copied into wasm (ranged source). */
+  readonly ranged: boolean;
 
   /** Cached runs/links for a page that has been rendered; [] otherwise. */
   getText(index: number): TextItem[];

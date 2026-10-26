@@ -84,8 +84,8 @@ const AREAS = [
   },
   {
     id: 'arch', name: 'Architecture (worker, ranged loading, cache)', weight: 6,
-    scores: { ours: 60, pdfjs: 100, mupdf: 80 },
-    gap: 'the worker landed (M9.1); still whole file resident in wasm memory, and no display list or page cache',
+    scores: { ours: 85, pdfjs: 100, mupdf: 80 },
+    gap: 'worker, ranged loading and a byte-budgeted page cache landed (M9.1/M9.2/M9.3); no display list, so a new zoom scale re-interprets the page',
   },
   {
     id: 'eco', name: 'Ecosystem (release, docs, integrations, testing)', weight: 5,
@@ -98,9 +98,9 @@ const AREAS = [
 // so the report can price each item in percentage points of the whole.
 const ITEMS = [
   {
-    title: 'Ranged loading + display list (M9.2/M9.3)',
-    areas: { arch: 100 }, effort: '2–3 weeks',
-    why: 'whole-file residency, no eviction; the worker that unblocks the work has landed',
+    title: 'Display list (M9.3 remainder)',
+    areas: { arch: 100 }, effort: '~1 week',
+    why: 'a new zoom scale re-interprets the page; the cache only covers scales already rendered',
   },
   {
     title: 'Shadings 1/6/7 and a verified 4/5',

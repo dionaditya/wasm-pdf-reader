@@ -6,6 +6,8 @@
 
 import { loadModule } from './loader.js';
 import { itemsToText, searchItems, boxToCss } from './text.js';
+import { isRangeSpec } from './range-source.js';
+import { PageCache } from './page-cache.js';
 
 // The wasm module owns a single page bitmap, so renders are serialised across
 // every document that shares the instance.
@@ -104,11 +106,16 @@ export class PdfDocument {
    * @param {number} handle wasm doc handle
    * @param {Uint8Array} bytes kept alive so wasm can copy from it on demand
    */
-  constructor(module, handle, bytes) {
+  constructor(module, handle, bytes, options = {}) {
     this.Module = module;
     this._handle = handle;
     this._bytes = bytes;
     this._closed = false;
+    this._cache = new PageCache({
+      enabled: options.pageCache !== false,
+      budgetBytes: options.pageCacheBytes,
+    });
+    this._visiblePage = 0;
     this._sizeCache = new Map();
     this._textCache = new Map();
     this._linkCache = new Map();
@@ -142,6 +149,10 @@ export class PdfDocument {
    * @returns {Promise<PdfDocument>}
    */
   static async open(source, options = {}) {
+    if (isRangeSpec(source) && !options.worker) {
+      throw new Error('wasm-pdf-reader: a ranged source needs { worker: true } — its '
+        + 'reads are synchronous, so it can only run off the main thread');
+    }
     let workerError = null;
     if (options.worker) {
       if (typeof Worker === 'undefined') {
@@ -170,6 +181,47 @@ export class PdfDocument {
     return doc;
   }
 
+  /**
+   * Open a document that is **not** loaded into wasm: the parser pulls byte
+   * ranges on demand (M9.2). Requires worker mode — the reads are synchronous.
+   *
+   * @param {{url?: string, blob?: Blob, size?: number}} spec
+   * @param {Object} [options] ModuleOptions + password
+   */
+  static async openRanged(spec, options = {}) {
+    const Module = await loadModule(options);
+    if (typeof Module._wpdf_open_stream !== 'function') {
+      throw new Error('wasm-pdf-reader: this build has no ranged-source support (rebuild the wasm)');
+    }
+    const { installRangeFetcher } = await import('./range-source.js');
+    const { size } = installRangeFetcher(spec);
+
+    let handle = 0;
+    let pwPtr = 0;
+    const password = options.password ? String(options.password) : '';
+    try {
+      if (password) {
+        const pw = new TextEncoder().encode(password);
+        pwPtr = Module._wpdf_alloc(pw.length);
+        if (!pwPtr) throw new Error('out of memory');
+        Module.HEAPU8.set(pw, pwPtr);
+        handle = Module._wpdf_open_stream(size, pwPtr, pw.length);
+      } else {
+        handle = Module._wpdf_open_stream(size, 0, 0);
+      }
+    } finally {
+      if (pwPtr) Module._wpdf_free(pwPtr);
+    }
+    if (!handle) {
+      const msg = Module.UTF8ToString(Module._wpdf_last_error()) || 'cannot read PDF';
+      throw new Error(`wasm-pdf-reader: ${msg}`);
+    }
+    const doc = new PdfDocument(Module, handle, null, options);
+    doc.filename = options.filename || spec.url || (spec.blob && spec.blob.name) || '';
+    doc.ranged = true;
+    return doc;
+  }
+
   static async _openInline(source, options = {}) {
     const Module = await loadModule(options);
     const { ptr, size } = await copyIntoWasm(Module, source);
@@ -180,7 +232,13 @@ export class PdfDocument {
       if (password && typeof Module._wpdf_open_pw !== 'function') {
         throw new Error('wasm-pdf-reader: this build cannot open password-protected PDFs (reload to update the wasm module)');
       }
-      if (password) {
+      // Test hook (M9.2): force the parser's resident window down so every
+      // slide path runs against a normal in-memory file.
+      const winBytes = Number(options.windowBytes);
+      if (!password && Number.isFinite(winBytes) && winBytes > 0
+          && typeof Module._wpdf_open_windowed === 'function') {
+        handle = Module._wpdf_open_windowed(ptr, size, winBytes | 0);
+      } else if (password) {
         const pw = new TextEncoder().encode(password);
         pwPtr = Module._wpdf_alloc(pw.length);
         if (!pwPtr) throw new Error('out of memory');
@@ -198,7 +256,7 @@ export class PdfDocument {
       throw new Error(`wasm-pdf-reader: ${msg}`);
     }
     // the bytes now live in wasm memory only; the JS copy is not kept
-    const doc = new PdfDocument(Module, handle, null);
+    const doc = new PdfDocument(Module, handle, null, options);
     doc.filename = options.filename || '';
     return doc;
   }
@@ -247,7 +305,9 @@ export class PdfDocument {
     const a = enc(name);
     const b = enc(value);
     try {
-      return M._wpdf_set_field(this._handle, a, b) === 1;
+      const ok = M._wpdf_set_field(this._handle, a, b) === 1;
+      if (ok) this._cache?.clear();   // the next render must repaint, not replay
+      return ok;
     } finally {
       M._wpdf_free(a);
       M._wpdf_free(b);
@@ -332,6 +392,15 @@ export class PdfDocument {
     const deviceScale = scale * dpr;
     const size = this.getPageSize(index);
 
+    // M9.3: a page already rasterized at this scale is a bitmap copy away. A
+    // pixelTransform (dark mode, tinting) mutates the bytes, so it bypasses the
+    // cache rather than poisoning it.
+    const cacheable = this._cache && this._cache.enabled && typeof options.pixelTransform !== 'function';
+    if (cacheable) {
+      const hit = this._cache.get(index, deviceScale);
+      if (hit) return { ...hit, stats: options.stats ? this._stats(index) : undefined };
+    }
+
     return serialise(async () => {
       this._assertOpen();
       const ok = this.Module._wpdf_render_page(this._handle, index, deviceScale);
@@ -359,7 +428,7 @@ export class PdfDocument {
         if (replaced && replaced.data) imageData = replaced;
       }
 
-      return {
+      const result = {
         imageData,
         width: w,
         height: h,
@@ -368,7 +437,25 @@ export class PdfDocument {
         scale,
         stats: options.stats ? this._stats(index) : undefined,
       };
+      if (cacheable) this._cache.set(index, deviceScale, result, PageCache.key(this._visiblePage ?? index, deviceScale));
+      return result;
     });
+  }
+
+  /** Tell the cache which page must survive eviction (the one on screen). */
+  pinPage(index, scale = 1.5, dpr = 1) {
+    this._visiblePage = index;
+    this._cache?.pin(index, scale * dpr);
+  }
+
+  /** Page-cache counters: {entries, bytes, budget, hits, misses, evictions}. */
+  get cacheStats() {
+    return this._cache ? this._cache.stats() : null;
+  }
+
+  /** Drop cached bitmaps (theme change, memory pressure). */
+  clearPageCache() {
+    this._cache?.clear();
   }
 
   /**
@@ -452,6 +539,26 @@ export class PdfDocument {
     return hits;
   }
 
+  /**
+   * How the bytes were obtained: `{ fetched, fetches, windowBytes }`. For a
+   * ranged document `fetched` is the point — it says how much of the file the
+   * engine actually read.
+   */
+  get sourceStats() {
+    const M = this.Module;
+    if (typeof M._wpdf_source_stats !== 'function' || !this._handle) return null;
+    const out = M._wpdf_alloc(3 * 8);
+    try {
+      const n = M._wpdf_source_stats(this._handle, out, 3);
+      if (!n) return null;
+      const view = new Float64Array(M.HEAPU8.buffer, out, 3);
+      const [fetched, fetches, windowBytes] = Array.from(view);
+      return { fetched, fetches, windowBytes, fileSize: this.ranged ? undefined : fetched };
+    } finally {
+      M._wpdf_free(out);
+    }
+  }
+
   /** Render statistics for a page (needs a render or text extraction first). */
   _stats(index) {
     const out = this.Module._wpdf_alloc(7 * 4);
@@ -488,6 +595,7 @@ export class PdfDocument {
     this._textCache.clear();
     this._linkCache.clear();
     this._sizeCache.clear();
+    this._cache?.clear();
     this.Module._wpdf_close(this._handle);
     this._handle = 0;
   }

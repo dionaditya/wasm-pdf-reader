@@ -48,39 +48,80 @@ static bool isDelim(int c) {
 static bool isRegular(int c) { return !isWS(c) && !isDelim(c); }
 
 // ─── lexer / parser ─────────────────────────────────────────────────────────
+// Offset-tracking lexer (M9.2). `at` is the authoritative position; `p` is a
+// pointer into whatever window is currently resident. Every read calls
+// resident(n) first, which slides the window when the bytes it needs are not in
+// memory — that is what lets the parser walk a file it has only partly fetched.
+//
+// The resident path (a MemorySource, the whole file in wasm) never slides, so
+// p/end stay put and this behaves exactly like the pointer lexer it replaced.
 struct Document::Lex {
     Document* doc;
-    const char* p;
-    const char* end;
+    const char* base = nullptr;   // file offset `baseOff` maps to base[0]
+    const char* p = nullptr;      // base + (at - baseOff)
+    const char* end = nullptr;    // base + resident bytes
+    size_t baseOff = 0;
+    size_t at = 0;                // absolute file offset of the next byte
+    bool memory = false;          // lexing a std::string, never the file
+    const char* memEnd = nullptr; // memory mode: end of the borrowed buffer
 
-    Lex(Document* d, const char* b, const char* e) : doc(d), p(b), end(e) {}
+    Lex(Document* d, size_t off) : doc(d), at(off) { resident(0); }
+    /// Lex a buffer that is already in memory (an object stream's decoded
+    /// bytes, a content stream). No window, no source access.
+    Lex(Document* d, const char* b, const char* e)
+        : doc(d), base(b), p(b), end(e), baseOff(0), at(0), memory(true), memEnd(e) {}
+
+    size_t offset() const { return at; }
+
+    /// Ensure `pad` bytes at `at` are contiguous. Returns false at EOF or when
+    /// the source cannot supply them.
+    bool resident(size_t pad) {
+        if (memory) return p + pad <= end;
+        if (p && p + pad <= end) return true;
+        if (!doc->cover(at, pad)) return false;
+        base = (const char*)doc->residentBase();
+        baseOff = doc->residentOff();
+        end = base + doc->residentSize();
+        p = base + (at - baseOff);
+        return p + pad <= end;
+    }
+
+    /// Advance by n bytes (they must already be resident).
+    void adv(size_t n = 1) { at += n; if (p) p += n; }
+
+    void seek(size_t off) {
+        at = off;
+        if (memory) { p = base + at; end = memEnd; return; }
+        p = nullptr;
+        end = nullptr;
+    }
 
     void skipWS() {
-        while (p < end) {
-            if (isWS((unsigned char)*p)) { ++p; continue; }
-            if (*p == '%') { while (p < end && *p != '\n' && *p != '\r') ++p; continue; }
+        while (resident(1)) {
+            if (isWS((unsigned char)*p)) { adv(); continue; }
+            if (*p == '%') { while (resident(1) && *p != '\n' && *p != '\r') adv(); continue; }
             break;
         }
     }
-    bool eof() { skipWS(); return p >= end; }
+    bool eof() { skipWS(); return !resident(1); }
     bool wordIs(const char* w) {
         size_t n = strlen(w);
-        if ((size_t)(end - p) < n) return false;
+        if (!resident(n)) return false;
         if (memcmp(p, w, n) != 0) return false;
-        if (p + n < end && isRegular((unsigned char)p[n])) return false;
+        if (resident(n + 1) && isRegular((unsigned char)p[n])) return false;
         return true;
     }
     bool eatWord(const char* w) {
         skipWS();
         if (!wordIs(w)) return false;
-        p += strlen(w);
+        adv(strlen(w));
         return true;
     }
 
     std::string readName() {
-        ++p;  // '/'
+        adv();  // '/'
         std::string s;
-        while (p < end && isRegular((unsigned char)*p)) {
+        while (resident(1) && isRegular((unsigned char)*p)) {
             if (*p == '#') {
                 auto hex = [&](int c) -> int {
                     if (c >= '0' && c <= '9') return c - '0';
@@ -88,27 +129,30 @@ struct Document::Lex {
                     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
                     return -1;
                 };
-                if (p + 2 < end) {
+                if (resident(3)) {
                     int h = hex((unsigned char)p[1]), l = hex((unsigned char)p[2]);
-                    if (h >= 0 && l >= 0) { s += (char)(h * 16 + l); p += 3; continue; }
+                    if (h >= 0 && l >= 0) { s += (char)(h * 16 + l); adv(3); continue; }
                 }
             }
-            s += *p++;
+            s += *p;
+            adv();
         }
         return s;
     }
 
     std::string readLiteralString() {
-        ++p;  // '('
+        adv();  // '('
         std::string s;
         int depth = 1;
-        while (p < end) {
-            char c = *p++;
+        while (resident(1)) {
+            char c = *p;
+            adv();
             if (c == '(') { ++depth; s += c; continue; }
             if (c == ')') { if (--depth == 0) break; s += c; continue; }
             if (c == '\\') {
-                if (p >= end) break;
-                char e = *p++;
+                if (!resident(1)) break;
+                char e = *p;
+                adv();
                 switch (e) {
                     case 'n': s += '\n'; break;
                     case 'r': s += '\r'; break;
@@ -116,12 +160,16 @@ struct Document::Lex {
                     case 'b': s += '\b'; break;
                     case 'f': s += '\f'; break;
                     case '(': case ')': case '\\': s += e; break;
-                    case '\r': if (p < end && *p == '\n') ++p; break;
+                    case '\r': if (resident(1) && *p == '\n') adv(); break;
                     case '\n': break;
                     default:
                         if (e >= '0' && e <= '7') {
                             int v = e - '0', n = 1;
-                            while (n < 3 && p < end && *p >= '0' && *p <= '7') { v = v * 8 + (*p - '0'); ++p; ++n; }
+                            while (n < 3 && resident(1) && *p >= '0' && *p <= '7') {
+                                v = v * 8 + (*p - '0');
+                                adv();
+                                ++n;
+                            }
                             s += (char)(v & 0xFF);
                         } else s += e;
                 }
@@ -133,7 +181,7 @@ struct Document::Lex {
     }
 
     std::string readHexString() {
-        ++p;  // '<'
+        adv();  // '<'
         std::string s;
         int hi = -1;
         auto hex = [](int c) -> int {
@@ -142,29 +190,32 @@ struct Document::Lex {
             if (c >= 'A' && c <= 'F') return c - 'A' + 10;
             return -1;
         };
-        while (p < end && *p != '>') {
-            int v = hex((unsigned char)*p++);
+        while (resident(1) && *p != '>') {
+            int v = hex((unsigned char)*p);
+            adv();
             if (v < 0) continue;
             if (hi < 0) hi = v;
             else { s += (char)(hi * 16 + v); hi = -1; }
         }
+        if (resident(1)) adv();
         if (hi >= 0) s += (char)(hi * 16);
-        if (p < end) ++p;
         return s;
     }
 
     bool readNumber(double& out, bool& isInt) {
         skipWS();
-        const char* s = p;
-        if (p < end && (*p == '+' || *p == '-')) ++p;
+        if (!resident(1)) return false;
+        size_t start = at;
+        std::string tmp;
+        if (*p == '+' || *p == '-') { tmp += *p; adv(); }
         bool any = false, dot = false;
-        while (p < end) {
-            if (*p >= '0' && *p <= '9') { any = true; ++p; }
-            else if (*p == '.' && !dot) { dot = true; ++p; }
+        while (resident(1)) {
+            char c = *p;
+            if (c >= '0' && c <= '9') { any = true; tmp += c; adv(); }
+            else if (c == '.' && !dot) { dot = true; tmp += c; adv(); }
             else break;
         }
-        if (!any) { p = s; return false; }
-        std::string tmp(s, p);
+        if (!any) { seek(start); return false; }
         out = atof(tmp.c_str());
         isInt = !dot;
         return true;
@@ -173,37 +224,38 @@ struct Document::Lex {
     ObjP parse(int depthGuard = 0) {
         if (depthGuard > 60) return mkNull();
         skipWS();
-        if (p >= end) return mkNull();
+        if (!resident(1)) return mkNull();
         char c = *p;
 
         if (c == '/') return mkName(readName());
         if (c == '(') return mkStr(readLiteralString());
         if (c == '[') {
-            ++p;
+            adv();
             auto a = mkArr();
             while (true) {
                 skipWS();
-                if (p >= end) break;
-                if (*p == ']') { ++p; break; }
-                size_t before = (size_t)(p - end);
+                if (!resident(1)) break;
+                if (*p == ']') { adv(); break; }
+                size_t before = at;
                 a->arr.push_back(parse(depthGuard + 1));
-                if ((size_t)(p - end) == before) { ++p; }  // no progress: skip a byte
+                if (at == before) adv();  // no progress: skip a byte
             }
             return a;
         }
         if (c == '<') {
-            if (p + 1 < end && p[1] == '<') {
-                p += 2;
+            if (resident(2) && p[1] == '<') {
+                adv(2);
                 auto d = mkDict();
                 while (true) {
                     skipWS();
-                    if (p >= end) break;
-                    if (p + 1 < end && p[0] == '>' && p[1] == '>') { p += 2; break; }
+                    if (!resident(1)) break;
+                    if (resident(2) && p[0] == '>' && p[1] == '>') { adv(2); break; }
                     if (*p != '/') {  // malformed: skip token
                         double dv; bool ii;
                         if (readNumber(dv, ii)) continue;
-                        if (*p == '(') { readLiteralString(); continue; }
-                        ++p; continue;
+                        if (resident(1) && *p == '(') { readLiteralString(); continue; }
+                        adv();
+                        continue;
                     }
                     std::string key = readName();
                     ObjP val = parse(depthGuard + 1);
@@ -213,23 +265,23 @@ struct Document::Lex {
             }
             return mkStr(readHexString());
         }
-        if (c == ')' || c == ']' || c == '>') { ++p; return mkNull(); }
+        if (c == ')' || c == ']' || c == '>') { adv(); return mkNull(); }
 
-        if (wordIs("true"))  { p += 4; auto o = std::make_shared<Obj>(); o->t = O_BOOL; o->b = true;  return o; }
-        if (wordIs("false")) { p += 5; auto o = std::make_shared<Obj>(); o->t = O_BOOL; o->b = false; return o; }
-        if (wordIs("null"))  { p += 4; return mkNull(); }
+        if (wordIs("true"))  { adv(4); auto o = std::make_shared<Obj>(); o->t = O_BOOL; o->b = true;  return o; }
+        if (wordIs("false")) { adv(5); auto o = std::make_shared<Obj>(); o->t = O_BOOL; o->b = false; return o; }
+        if (wordIs("null"))  { adv(4); return mkNull(); }
 
         double v; bool isInt;
-        const char* save = p;
+        size_t save = at;
         if (readNumber(v, isInt)) {
             // possible indirect reference: "<int> <int> R"
             if (isInt && v >= 0) {
-                const char* after = p;
+                size_t after = at;
                 double g; bool gInt;
                 if (readNumber(g, gInt) && gInt && g >= 0) {
                     skipWS();
-                    if (p < end && *p == 'R' && (p + 1 >= end || !isRegular((unsigned char)p[1]))) {
-                        ++p;
+                    if (resident(1) && *p == 'R' && (resident(2) ? !isRegular((unsigned char)p[1]) : true)) {
+                        adv();
                         auto o = std::make_shared<Obj>();
                         o->t = O_REF;
                         o->ref = (int)v;
@@ -237,18 +289,144 @@ struct Document::Lex {
                         return o;
                     }
                 }
-                p = after;
+                seek(after);
             }
             return isInt ? mkInt((long long)v) : mkReal(v);
         }
-        p = save;
+        seek(save);
         // bare keyword (operator) — consume it
         std::string kw;
-        while (p < end && isRegular((unsigned char)*p)) kw += *p++;
-        if (kw.empty()) { ++p; return mkNull(); }
+        while (resident(1) && isRegular((unsigned char)*p)) { kw += *p; adv(); }
+        if (kw.empty()) { adv(); return mkNull(); }
         return mkName(kw);
     }
+
+    /// Copy `len` bytes from `at` and advance past them.
+    bool copyFrom(size_t len, std::string& out) {
+        out.clear();
+        out.reserve(len < (1u << 20) ? len : (1u << 20));
+        size_t left = len;
+        while (left) {
+            if (!resident(1)) return false;
+            size_t avail = (size_t)(end - p);
+            size_t n = avail < left ? avail : left;
+            out.append(p, n);
+            adv(n);
+            left -= n;
+        }
+        return true;
+    }
+
+    /// Advance to just past the next occurrence of `needle`, or to EOF.
+    /// False when the needle was not found.
+    bool skipPast(const char* needle, size_t n) {
+        size_t hit = 0;
+        while (resident(n)) {
+            if (p[hit] == needle[hit]) {
+                if (++hit == n) { adv(n); return true; }
+            } else {
+                size_t step = hit ? 1 : 1;
+                hit = 0;
+                adv(step);
+            }
+        }
+        return false;
+    }
 };
+
+// ─── byte access (M9.2) ─────────────────────────────────────────────────────
+// One resident window at a time; `direct()` sources (the whole file in memory)
+// bypass it entirely so the pre-M9.2 behaviour is untouched.
+
+const uint8_t* Document::residentBase() const {
+    const uint8_t* d = directBase();
+    return (d && !windowForced) ? d : winBase();
+}
+size_t Document::residentOff() const { return (directBase() && !windowForced) ? 0 : winOff; }
+size_t Document::residentSize() const { return (directBase() && !windowForced) ? fileSize() : win.size(); }
+
+static const size_t kBaseChunk = 16u << 10;     // random access: 16 KB
+static const size_t kMaxWindow = 1u << 20;      // sequential: up to 1 MB
+
+bool Document::cover(size_t off, size_t need) {
+    if (!src) return false;
+    const size_t n = fileSize();
+    if (off > n) return false;
+    if (need > n - off) return false;                 // would run past EOF
+    if (directBase() && !windowForced) return true;   // whole file resident
+    if (!win.empty() && winOff <= off && off - winOff + need <= win.size()) return true;
+    // Adaptive readahead. Sequential access (the byte we want is the one right
+    // after the window) doubles the window; a random jump — object dict to
+    // object dict, which is what a page-tree walk does — drops back to the
+    // small chunk. A fixed 1 MB window cost 84 MB of a 117 MB file just to read
+    // 240 page dicts; 16 KB growing on demand costs a few hundred KB.
+    const bool sequential = !win.empty() && off >= winOff + win.size()
+        && off - (winOff + win.size()) < 64;
+    size_t grow = sequential ? (windowBytes < kMaxWindow ? windowBytes * 2 : kMaxWindow)
+                             : kBaseChunk;
+    if (grow > kMaxWindow) grow = kMaxWindow;
+    windowBytes = grow;
+    size_t want = need > grow ? need : grow;
+    size_t avail = n - off;
+    if (want > avail) want = avail;
+    if (!want) return false;
+    win.resize(want);
+    size_t got = src->fetch(off, win.data(), want);
+    if (!got) { win.clear(); return false; }
+    win.resize(got);
+    winOff = off;
+    return need <= got;
+}
+
+int Document::byteAt(size_t off) {
+    const uint8_t* d = directBase();
+    if (d && !windowForced) return off < fileSize() ? d[off] : -1;
+    if (!cover(off, 1)) return -1;
+    return win[off - winOff];
+}
+
+std::string Document::readBytes(size_t off, size_t len) {
+    std::string out;
+    const size_t n = fileSize();
+    if (off >= n || !len) return out;
+    if (len > n - off) len = n - off;
+    const uint8_t* d = directBase();
+    if (d && !windowForced) { out.assign((const char*)d + off, len); return out; }
+    out.reserve(len);
+    size_t o = off, left = len;
+    while (left) {
+        size_t step = left < windowBytes ? left : windowBytes;
+        if (!cover(o, step)) break;
+        size_t at = o - winOff;
+        size_t avail = win.size() - at;
+        size_t take = avail < left ? avail : left;
+        out.append((const char*)win.data() + at, take);
+        o += take;
+        left -= take;
+    }
+    return out;
+}
+
+size_t Document::findForward(size_t from, const char* needle, size_t nl) {
+    const size_t n = fileSize();
+    const size_t CH = 1 << 16;
+    std::string carry;
+    for (size_t off = from; off < n; off += CH) {
+        std::string chunk = carry + readBytes(off, CH);
+        size_t base = off - carry.size();
+        size_t hit = chunk.find(needle, 0);
+        while (hit != std::string::npos) {
+            if (base + hit + nl <= n) return base + hit;
+            hit = chunk.find(needle, hit + 1);
+        }
+        carry = chunk.size() > nl ? chunk.substr(chunk.size() - nl) : chunk;
+    }
+    return std::string::npos;
+}
+
+long Document::absOff(const uint8_t* p) const {
+    return (long)(residentOff() + (size_t)(p - residentBase()));
+}
 
 // ─── load ───────────────────────────────────────────────────────────────────
 bool Document::load(const uint8_t* data, size_t len) {
@@ -263,21 +441,68 @@ bool Document::load(const uint8_t* data, size_t len) {
     objNumToStm.clear();
     stmCache.clear();
     stmCacheBytes = 0;
-    buf.assign((const char*)data, len);
-    if (buf.size() < 8) { error = "file too small"; return false; }
+    auto mem = std::make_unique<MemorySource>();
+    mem->buf.assign((const char*)data, len);
+    return loadSource(std::move(mem));
+}
 
-    size_t hdr = buf.find("%PDF-");
+bool Document::loadWindowed(const uint8_t* data, size_t len, size_t wb) {
+    // Test hook: the whole file is resident, but the window is forced small so
+    // every code path that slides it is exercised by the normal fixtures.
+    windowForced = true;
+    windowBytes = wb ? wb : 4096;
+    return load(data, len);
+}
+
+bool Document::loadSource(std::unique_ptr<ByteSource> s) {
+    loaded = false;
+    error.clear();
+    warnings.clear();
+    cache.clear();
+    xref.clear();
+    xrefFree.clear();
+    pages.clear();
+    fontCache.clear();
+    objNumToStm.clear();
+    stmCache.clear();
+    stmCacheBytes = 0;
+    src = std::move(s);
+    win.clear();
+    winOff = 0;
+    const size_t n = fileSize();
+    if (n < 8) { error = "file too small"; return false; }
+
+    // %PDF- lives at the start; only a file with junk in front needs a scan.
+    size_t hdr = readBytes(0, n < 4096 ? n : 4096).find("%PDF-");
+    if (hdr == std::string::npos) {
+        size_t hit = findForward(0, "%PDF-", 5);
+        if (hit != std::string::npos) hdr = hit;
+    }
     if (hdr == std::string::npos) { error = "no %PDF header"; return false; }
 
     long startxref = -1;
-    size_t sx = buf.rfind("startxref");
+    // 'startxref' is in the last few hundred bytes; read the tail window only,
+    // so opening a 300 MB file does not pull 300 MB.
+    size_t tailLen = n < 65536 ? n : 65536;
+    size_t tailOff = n - tailLen;
+    std::string tail = readBytes(tailOff, tailLen);
+    size_t sx = tail.rfind("startxref");
+    if (sx == std::string::npos) {
+        // damaged/truncated trailer: fall back to scanning for it (rare)
+        size_t hit = findForward(0, "startxref", 9);
+        if (hit != std::string::npos) {
+            tailOff = hit;
+            tail = readBytes(hit, 64);
+            sx = 0;
+        }
+    }
     if (sx != std::string::npos) {
         size_t q = sx + 9;
-        while (q < buf.size() && isWS((unsigned char)buf[q])) ++q;
-        startxref = atol(buf.c_str() + q);
+        while (q < tail.size() && isWS((unsigned char)tail[q])) ++q;
+        startxref = atol(tail.c_str() + q);
     }
     bool okXref = false;
-    if (startxref > 0 && startxref < (long)buf.size()) okXref = parseXref(startxref, 0);
+    if (startxref > 0 && startxref < (long)n) okXref = parseXref(startxref, 0);
     if (!okXref || !trailer || !trailer->get("Root")) {
         warn("xref damaged, reconstructing by scanning");
         reconstructXref();
@@ -452,33 +677,43 @@ ObjP Document::objFromObjectStream(int stmNum, int wantNum) {
 // Last resort for objects the xref does not cover: find "<num> <gen> obj" in
 // the raw bytes. The number must start a token, otherwise object 37 matches
 // inside "1337 0 obj"; the last match wins because incremental updates append.
-long Document::scanObjectOffset(int num) const {
+long Document::scanObjectOffset(int num) {
     const std::string pat = std::to_string(num);
+    const size_t n = fileSize();
+    const size_t CH = 1 << 16;
     long found = -1;
-    size_t p = 0;
-    while ((p = buf.find(pat, p)) != std::string::npos) {
-        bool leftOk = p == 0 || !(isdigit((unsigned char)buf[p - 1]) || buf[p - 1] == '.');
-        size_t q = p + pat.size();
-        if (leftOk && q < buf.size() && isWS((unsigned char)buf[q])) {
-            while (q < buf.size() && isWS((unsigned char)buf[q])) ++q;
-            size_t gs = q;
-            while (q < buf.size() && isdigit((unsigned char)buf[q])) ++q;
-            if (q > gs) {
-                while (q < buf.size() && isWS((unsigned char)buf[q])) ++q;
-                if (q + 3 <= buf.size() && buf.compare(q, 3, "obj") == 0 &&
-                    (q + 3 >= buf.size() || !isRegular((unsigned char)buf[q + 3])))
-                    found = (long)p;
+    std::string carry;
+    for (size_t off = 0; off < n; off += CH) {
+        // one chunk of overlap so a match straddling the boundary is not lost
+        std::string chunk = carry + readBytes(off, CH);
+        size_t chunkBase = off - carry.size();
+        size_t p = 0;
+        while ((p = chunk.find(pat, p)) != std::string::npos) {
+            bool leftOk = (chunkBase + p) == 0
+                || !(isdigit((unsigned char)chunk[p - 1]) || chunk[p - 1] == '.');
+            size_t q = p + pat.size();
+            if (leftOk && q < chunk.size() && isWS((unsigned char)chunk[q])) {
+                while (q < chunk.size() && isWS((unsigned char)chunk[q])) ++q;
+                size_t gs = q;
+                while (q < chunk.size() && isdigit((unsigned char)chunk[q])) ++q;
+                if (q > gs) {
+                    while (q < chunk.size() && isWS((unsigned char)chunk[q])) ++q;
+                    if (q + 3 <= chunk.size() && chunk.compare(q, 3, "obj") == 0 &&
+                        (q + 3 >= chunk.size() || !isRegular((unsigned char)chunk[q + 3])))
+                        found = (long)(chunkBase + p);   // last match wins
+                }
             }
+            p += pat.size();
         }
-        p += pat.size();
+        carry = chunk.size() > pat.size() + 32 ? chunk.substr(chunk.size() - (pat.size() + 32)) : chunk;
     }
     return found;
 }
 
 ObjP Document::parseObjectAt(long off, bool* ok) {
     *ok = false;
-    if (off < 0 || (size_t)off >= buf.size()) return nullptr;
-    Lex lex(this, buf.data() + off, buf.data() + buf.size());
+    if (off < 0 || (size_t)off >= fileSize()) return nullptr;
+    Lex lex(this, (size_t)off);
     double n, g; bool ia, ib;
     if (!lex.readNumber(n, ia) || !lex.readNumber(g, ib)) return nullptr;
     if (!lex.eatWord("obj")) return nullptr;
@@ -487,72 +722,65 @@ ObjP Document::parseObjectAt(long off, bool* ok) {
     o->genNum = (int)g;
     lex.skipWS();
     if (o->t == O_DICT && lex.wordIs("stream")) {
-        lex.p += 6;
+        lex.adv(6);
         // stream data starts after CRLF or LF (not CR alone)
-        if (lex.p < lex.end && *lex.p == '\r') ++lex.p;
-        if (lex.p < lex.end && *lex.p == '\n') ++lex.p;
-        const char* start = lex.p;
+        if (lex.resident(1) && *lex.p == '\r') lex.adv();
+        if (lex.resident(1) && *lex.p == '\n') lex.adv();
+        size_t startOff = lex.offset();
         long len = -1;
         ObjP lenObj = o->get("Length");
         if (lenObj) {
             if (lenObj->t == O_REF) lenObj = obj(lenObj->ref);
             if (lenObj && (lenObj->t == O_INT || lenObj->t == O_REAL)) len = (long)lenObj->num;
         }
-        long avail = (long)(lex.end - start);
-        bool valid = len >= 0 && len <= avail;
+        const size_t n = fileSize();
+        bool valid = len >= 0 && (size_t)len <= n - startOff;
         if (valid) {
             // sanity: 'endstream' must follow the declared length (allow EOL)
-            const char* chk = start + len;
-            const char* lim = chk + 12 < lex.end ? chk + 12 : lex.end;
-            bool found = false;
-            for (const char* q = chk; q < lim; q++)
-                if (memcmp(q, "endstream", 9) == 0) { found = true; break; }
-            if (!found) valid = false;
+            std::string after = readBytes(startOff + (size_t)len, 12);
+            if (after.find("endstream") == std::string::npos) valid = false;
         }
         if (!valid) {
-            // hunt for endstream
-            const char* q = start;
-            while (q + 9 <= lex.end && memcmp(q, "endstream", 9) != 0) ++q;
-            len = (long)(q - start);
-            if (q + 9 <= lex.end) len -= 0;
+            // hunt for endstream, in chunks, without holding the file
+            size_t hit = findForward(startOff, "endstream", 9);
+            len = (long)(hit == std::string::npos ? n - startOff : hit - startOff);
             if (len < 0) len = 0;
-            o->isStream = true;
-            o->raw.assign(start, (size_t)len);
-        } else {
-            o->isStream = true;
-            o->raw.assign(start, (size_t)len);
         }
+        o->isStream = true;
+        o->raw = readBytes(startOff, (size_t)len);
+        lex.seek(startOff + (size_t)len);
     }
     *ok = true;
     return o;
 }
 
 bool Document::parseXref(long off, int depth) {
-    if (depth > 40 || off <= 0 || (size_t)off >= buf.size()) return false;
-    Lex lex(this, buf.data() + off, buf.data() + buf.size());
+    if (depth > 40 || off <= 0 || (size_t)off >= fileSize()) return false;
+    Lex lex(this, (size_t)off);
     lex.skipWS();
     bool gotTrailer = false;
     ObjP trailerDict;
     if (lex.wordIs("xref")) {
-        lex.p += 4;
+        lex.adv(4);
         while (true) {
             lex.skipWS();
-            if (lex.p >= lex.end) break;
-            if (lex.wordIs("trailer")) { lex.p += 7; break; }
+            if (!lex.resident(1)) break;
+            if (lex.wordIs("trailer")) { lex.adv(7); break; }
             double start, count; bool ia, ib;
             if (!lex.readNumber(start, ia) || !lex.readNumber(count, ib)) break;
             for (int i = 0; i < (int)count; i++) {
                 double o, g; bool oa, ga;
                 if (!lex.readNumber(o, oa) || !lex.readNumber(g, ga)) break;
                 lex.skipWS();
-                if (lex.p >= lex.end) break;
-                char ty = *lex.p++;
+                if (!lex.resident(1)) break;
+                char ty = *lex.p;
+                lex.adv();
                 int num = (int)start + i;
                 if (ty == 'n' && !xref.count(num)) xref[num] = (long)o;
             }
         }
         lex.skipWS();
-        if (lex.p < lex.end && *lex.p == '<') trailerDict = lex.parse();
+        if (lex.resident(1) && *lex.p == '<') trailerDict = lex.parse();
     } else {
         // cross-reference stream
         bool ok = false;
@@ -621,33 +849,53 @@ bool Document::parseXref(long off, int depth) {
 void Document::reconstructXref() {
     xref.clear();
     objNumToStm.clear();
-    const char* b = buf.data();
-    const char* e = buf.data() + buf.size();
-    const char* p = b;
-    while (p < e) {
-        // find digits followed by digits followed by "obj"
-        while (p < e && !(*p >= '0' && *p <= '9')) ++p;
-        const char* numStart = p;
-        while (p < e && *p >= '0' && *p <= '9') ++p;
-        if (p >= e) break;
-        if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') continue;
-        const char* q = p;
-        while (q < e && isWS((unsigned char)*q)) ++q;
-        const char* genStart = q;
-        while (q < e && *q >= '0' && *q <= '9') ++q;
-        if (q == genStart) continue;
-        const char* r = q;
-        while (r < e && isWS((unsigned char)*r)) ++r;
-        if (r + 3 <= e && memcmp(r, "obj", 3) == 0 && (r + 3 >= e || !isRegular((unsigned char)r[3]))) {
-            int num = atoi(std::string(numStart, p - numStart).c_str());
-            xref[num] = (long)(numStart - b);   // later (newer) definitions win
-            p = r + 3;
+    // Chunked: this is the damaged-file path, and it may have to walk a file
+    // far bigger than the window (or than we want resident).
+    const size_t n = fileSize();
+    const size_t CH = 1 << 16;
+    std::string carry;
+    for (size_t off = 0; off < n; off += CH) {
+        std::string chunk = carry + readBytes(off, CH);
+        const size_t chunkBase = off - carry.size();
+        const size_t len = chunk.size();
+        // leave a tail unexamined so a match straddling the boundary survives
+        const size_t limit = len > 64 ? len - 64 : 0;
+        size_t i = 0;
+        while (i < limit) {
+            // "digits ws digits ws obj"
+            while (i < len && !(chunk[i] >= '0' && chunk[i] <= '9')) ++i;
+            size_t numStart = i;
+            while (i < len && chunk[i] >= '0' && chunk[i] <= '9') ++i;
+            if (i >= len) break;
+            if (!isWS((unsigned char)chunk[i])) continue;
+            size_t q = i;
+            while (q < len && isWS((unsigned char)chunk[q])) ++q;
+            size_t genStart = q;
+            while (q < len && chunk[q] >= '0' && chunk[q] <= '9') ++q;
+            if (q == genStart) continue;
+            size_t r = q;
+            while (r < len && isWS((unsigned char)chunk[r])) ++r;
+            if (r + 3 <= len && chunk.compare(r, 3, "obj") == 0 &&
+                (r + 3 >= len || !isRegular((unsigned char)chunk[r + 3]))) {
+                int num = atoi(chunk.substr(numStart, i - numStart).c_str());
+                xref[num] = (long)(chunkBase + numStart);   // newer definitions win
+                i = r + 3;
+            }
         }
+        carry = len > 64 ? chunk.substr(len - 64) : chunk;
     }
     // trailer: prefer a real one, else find the catalog
-    size_t t = buf.rfind("trailer");
+    size_t t = std::string::npos;
+    size_t tailLen = n < 65536 ? n : 65536;
+    std::string tail = readBytes(n - tailLen, tailLen);
+    size_t hi = tail.rfind("trailer");
+    if (hi != std::string::npos) t = n - tailLen + hi;
+    else {
+        size_t hit = findForward(0, "trailer", 7);
+        if (hit != std::string::npos) t = hit;
+    }
     if (t != std::string::npos) {
-        Lex lex(this, buf.data() + t + 7, buf.data() + buf.size());
+        Lex lex(this, t + 7);
         ObjP d = lex.parse();
         if (d && d->t == O_DICT) trailer = d;
     }

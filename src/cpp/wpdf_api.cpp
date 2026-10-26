@@ -15,6 +15,10 @@
 #include "pdfdoc.hpp"
 #include "pdfraster.hpp"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -145,6 +149,81 @@ WPDF_EXPORT void* wpdf_open_pw(const uint8_t* data, int len, const char* pw, int
     DocHandle* h = new DocHandle();
     if (pw && pwLen > 0) h->doc.password.assign(pw, (size_t)pwLen);
     if (!h->doc.load(data, (size_t)len)) {
+        gLastError = h->doc.error.empty() ? "cannot parse PDF" : h->doc.error;
+        delete h;
+        return nullptr;
+    }
+    h->reset(h->doc.pageCount());
+    gLastError.clear();
+    return h;
+}
+
+// ── sourced (ranged) documents — M9.2 ───────────────────────────────────────
+// The host supplies the bytes on demand. `__wpdfRangeFetch(offset, length)`
+// returns a Uint8Array with up to `length` bytes at `offset` (a Blob slice or
+// an HTTP Range request in the worker); returning null/empty means failure.
+// Synchronous by design: the parser is a synchronous lexer. In practice this
+// only runs inside a worker (M9.1), where a blocking read cannot freeze the tab.
+#ifdef __EMSCRIPTEN__
+EM_JS(int, wpdf_js_range_fetch, (int offset, int length, unsigned char* dst, int cap), {
+  const f = (typeof globalThis !== 'undefined') ? globalThis.__wpdfRangeFetch : null;
+  if (typeof f !== 'function') return -1;
+  let bytes;
+  try { bytes = f(offset, length); } catch (e) { return -2; }
+  if (!bytes || !bytes.length) return 0;
+  const n = Math.min(bytes.length | 0, cap);
+  HEAPU8.set(bytes.subarray(0, n), dst);
+  return n;
+});
+#else
+static int wpdf_js_range_fetch(int, int, unsigned char*, int) { return -1; }
+#endif
+
+static size_t rangeFetchThunk(size_t off, uint8_t* dst, size_t cap, void* ctx) {
+    (void)ctx;
+    if (cap > 0x7fffffffu) cap = 0x7fffffffu;
+    int got = wpdf_js_range_fetch((int)off, (int)cap, dst, (int)cap);
+    return got > 0 ? (size_t)got : 0;
+}
+
+// Parse a PDF of `total` bytes that has not been loaded into wasm.
+WPDF_EXPORT void* wpdf_open_stream(double total, const char* pw, int pwLen) {
+    if (!(total > 0)) {
+        gLastError = "empty document";
+        return nullptr;
+    }
+    DocHandle* h = new DocHandle();
+    if (pw && pwLen > 0) h->doc.password.assign(pw, (size_t)pwLen);
+    auto cs = std::make_unique<pdf::CallbackSource>((size_t)total, rangeFetchThunk, nullptr);
+    if (!h->doc.loadSource(std::move(cs))) {
+        gLastError = h->doc.error.empty() ? "cannot parse PDF" : h->doc.error;
+        delete h;
+        return nullptr;
+    }
+    h->reset(h->doc.pageCount());
+    gLastError.clear();
+    return h;
+}
+
+// out: [bytes fetched through the source, number of fetch calls, window bytes].
+WPDF_EXPORT int wpdf_source_stats(void* handle, double* out, int n) {
+    DocHandle* h = H(handle);
+    if (!h || !out || n < 3) return 0;
+    out[0] = h->doc.src ? (double)h->doc.src->fetched : 0;
+    out[1] = h->doc.src ? (double)h->doc.src->fetches : 0;
+    out[2] = (double)h->doc.windowBytes;
+    return 3;
+}
+
+// Test hook: force the parsing window down to `windowBytes` so the sliding
+// paths run against the normal in-memory fixtures.
+WPDF_EXPORT void* wpdf_open_windowed(const uint8_t* data, int len, int windowBytes) {
+    if (!data || len <= 0) {
+        gLastError = "empty document";
+        return nullptr;
+    }
+    DocHandle* h = new DocHandle();
+    if (!h->doc.loadWindowed(data, (size_t)len, (size_t)(windowBytes > 0 ? windowBytes : 4096))) {
         gLastError = h->doc.error.empty() ? "cannot parse PDF" : h->doc.error;
         delete h;
         return nullptr;

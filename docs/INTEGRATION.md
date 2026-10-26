@@ -419,6 +419,49 @@ self.onmessage = async ({ data }) => {
 Then paint into an `OffscreenCanvas` in the worker (or transfer the buffer back
 and `putImageData` on the main thread).
 
+## Ranged loading (big files, no copy)
+
+By default the file is copied into wasm memory once. For a large document —
+several hundred pages, or a scan big enough to matter on a phone — the engine can
+instead read byte ranges on demand, so the wasm heap holds a window instead of
+the file (M9.2):
+
+```js
+const doc = await PdfDocument.open(
+  { url: '/files/annual-report.pdf', size: 117_000_000 },
+  { worker: true, wasmUrl: '/pkg/pdf-reader.wasm', workerUrl: '/pkg/worker.js' },
+);
+```
+
+Or with a `File`/`Blob`, which slices locally and never touches the network:
+
+```js
+const doc = await PdfDocument.open({ blob: file, size: file.size }, { worker: true });
+```
+
+Requirements and behaviour:
+
+- **Worker mode is mandatory.** The parser's reads are synchronous, so a ranged
+  source can only run off the main thread. `open()` throws a clear error if you
+  ask for one inline.
+- **Your server must answer `Range`** (`206 Partial Content`). If it ignores the
+  header and returns `200` with the whole body, that response is kept and sliced
+  locally — correct, but you paid the full download. `examples/server.mjs` shows
+  a 60-line implementation; check with
+  `curl -sI -H 'Range: bytes=0-99' https://your.host/doc.pdf` for a `206`.
+- **One ranged document per worker.** The fetch hook is per worker, so opening a
+  second ranged file while the first is alive throws rather than silently reading
+  the wrong bytes. Close the first, or give each its own pool.
+- **`size` is required** for a URL. Range requests need to know where the file
+  ends; read it from `Content-Length` (`HEAD`) or your own metadata.
+- **Cost to know about:** the worker reads every page dict at open to fill the
+  viewer's geometry snapshot. That is one range request per page — fine on a fast
+  origin (117 MB / 240 pages: ~3 s), painful on a slow one. If that matters,
+  open the document, then measure before deciding.
+
+What this is not: streaming *rendering*. The page you draw is fully fetched
+before it is rasterized; ranged loading narrows *which* bytes that is.
+
 ## Serving the documents themselves
 
 `PdfDocument.open(source)` accepts:
