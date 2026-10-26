@@ -166,6 +166,19 @@ function poolFor(options) {
   return pool;
 }
 
+// Above this size a Blob is read as byte ranges rather than posted whole: the
+// worker would copy it into wasm, and the module's heap ceiling is 1 GiB — a
+// 1 GB PDF cannot be copied at all. Slicing a Blob is local and synchronous, so
+// the ranged path is both the only way it fits and about as fast.
+export const RANGED_BLOB_THRESHOLD = 32 * 1024 * 1024;
+
+function rangedThreshold(options) {
+  if (options.ranged === false) return Infinity;
+  if (options.ranged === true) return 0;
+  const n = Number(options.rangedAboveBytes);
+  return Number.isFinite(n) && n >= 0 ? n : RANGED_BLOB_THRESHOLD;
+}
+
 /** Turn any accepted source into something the worker can open without a copy. */
 async function openPayload(source, options) {
   const payload = {
@@ -174,6 +187,22 @@ async function openPayload(source, options) {
     wasmUrl: options.wasmUrl || '',
   };
   let transfer = [];
+  const threshold = rangedThreshold(options);
+  if (typeof Blob !== 'undefined' && source instanceof Blob && source.size > threshold) {
+    // Too big to hand over whole: let the worker slice it instead.
+    payload.range = { url: '', blob: source, size: source.size };
+    payload.filename = payload.filename || source.name || '';
+    return { payload, transfer };
+  }
+  if (typeof ArrayBuffer !== 'undefined'
+    && (source instanceof ArrayBuffer || ArrayBuffer.isView(source))
+    && source.byteLength > threshold) {
+    // Same ceiling applies to a buffer; a Blob view of it avoids the wasm copy
+    // (the JS copy stays, so this is not free — but it does not double into wasm).
+    const bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    payload.range = { url: '', blob: new Blob([bytes]), size: bytes.length };
+    return { payload, transfer };
+  }
   if (isRangeSpec(source)) {
     // Not copied: the worker pulls byte ranges itself, from a Blob slice or an
     // HTTP Range request. This is the whole point of M9.2.

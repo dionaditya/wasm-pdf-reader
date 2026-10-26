@@ -25,13 +25,54 @@ function serialise(task) {
 // between ~2x the file size and ~1x.
 const CHUNK_BYTES = 16 * 1024 * 1024;
 
-function outOfMemory(size, Module) {
-  const mb = (size / (1024 * 1024)).toFixed(1);
-  const heapMb = Module && Module.HEAPU8 ? (Module.HEAPU8.length / (1024 * 1024)).toFixed(0) : '?';
+// Mirrors MAXIMUM_MEMORY in build.sh. The module cannot address more than this
+// however much RAM the device has.
+const WASM_CEILING_BYTES = 1024 * 1024 * 1024;
+// A whole-file copy has to fit the file *and* everything a render needs on top
+// of it (a page bitmap, decoded streams, the parser's own structures). Above
+// half the ceiling that headroom no longer exists on any device, so the copy is
+// not worth attempting — it just grows the heap to its limit and fails, which is
+// what used to surface as a confusing "out of memory" on a big file.
+const COPY_BUDGET_BYTES = WASM_CEILING_BYTES / 2;
+
+const mb = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+/** The runtime's real ceiling: resizable memories report it, older ones do not. */
+function heapCeilingBytes(Module) {
+  const buffer = Module?.HEAPU8?.buffer;
+  const max = buffer && Number.isFinite(buffer.maxByteLength) ? buffer.maxByteLength : 0;
+  return max > 0 ? max : WASM_CEILING_BYTES;
+}
+
+/** Size in bytes of a source we can measure without reading it. */
+function sourceSize(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) return source.size;
+  if (typeof ArrayBuffer !== 'undefined' && (source instanceof ArrayBuffer || ArrayBuffer.isView(source))) {
+    return source.byteLength;
+  }
+  return 0;
+}
+
+const RANGED_HINT =
+  'Open it with ranged loading instead, so the parser reads only the byte ranges it needs: ' +
+  "PdfDocument.open({ url, size, worker: true }) — or { blob, size, worker: true } for a local file. " +
+  'The mounted viewer does this automatically when the file is a Blob and { worker: true } is set.';
+
+/** The file alone cannot fit the heap, with or without growth. */
+function tooLargeToCopy(size) {
   return new Error(
-    `wasm-pdf-reader: out of memory — this PDF is ${mb} MB, the WebAssembly heap stalled at ${heapMb} MB ` +
-    `of its 1024 MB ceiling. Mobile browsers cap a tab well below that (iOS especially); ` +
-    `try a desktop browser or a smaller file.`,
+    `wasm-pdf-reader: this PDF is ${mb(size)} — too large to copy into the WebAssembly heap ` +
+    `(${mb(WASM_CEILING_BYTES)} ceiling). ${RANGED_HINT}`,
+  );
+}
+
+/** The copy would fit a 1 GiB heap, but this runtime refused to grow. */
+function heapStalled(size, Module) {
+  const heap = Module?.HEAPU8?.length || 0;
+  return new Error(
+    `wasm-pdf-reader: this PDF is ${mb(size)} and the WebAssembly heap could not grow past ` +
+    `${mb(heap)} (its ceiling is ${mb(heapCeilingBytes(Module))}). Mobile browsers — iOS in ` +
+    `particular — cap wasm memory well below that. ${RANGED_HINT}`,
   );
 }
 
@@ -39,8 +80,9 @@ async function copyIntoWasm(Module, source) {
   if (typeof Blob !== 'undefined' && source instanceof Blob) {
     const size = source.size;
     if (!size) throw new Error('wasm-pdf-reader: empty file');
+    if (size > COPY_BUDGET_BYTES) throw tooLargeToCopy(size);
     const ptr = Module._wpdf_alloc(size);
-    if (!ptr) throw outOfMemory(size, Module);
+    if (!ptr) throw heapStalled(size, Module);
     try {
       for (let off = 0; off < size; off += CHUNK_BYTES) {
         const end = Math.min(size, off + CHUNK_BYTES);
@@ -55,8 +97,9 @@ async function copyIntoWasm(Module, source) {
   }
   const bytes = await toBytes(source);
   if (!bytes.length) throw new Error('wasm-pdf-reader: empty file');
+  if (bytes.length > COPY_BUDGET_BYTES) throw tooLargeToCopy(bytes.length);
   const ptr = Module._wpdf_alloc(bytes.length);
-  if (!ptr) throw outOfMemory(bytes.length, Module);
+  if (!ptr) throw heapStalled(bytes.length, Module);
   Module.HEAPU8.set(bytes, ptr);
   return { ptr, size: bytes.length };
 }
@@ -169,6 +212,21 @@ export class PdfDocument {
         }
       }
     }
+    // A file above the copy budget cannot be opened inline on any device, so
+    // ranged loading is the only path rather than an optimisation. Take it even
+    // when the caller did not ask for a worker — but if it fails, throw that
+    // error instead of attempting a copy that is certain to run out of memory.
+    const size = sourceSize(source);
+    if (size > COPY_BUDGET_BYTES) {
+      if (typeof Worker === 'undefined') throw tooLargeToCopy(size);
+      try {
+        const remote = await import('./remote.js');
+        return await remote.openRemote(source, { ...options, worker: true, ranged: true });
+      } catch (err) {
+        err.message = `${tooLargeToCopy(size).message} (ranged loading failed: ${err.message})`;
+        throw err;
+      }
+    }
     const doc = await PdfDocument._openInline(source, options);
     if (workerError) {
       doc.workerError = workerError;
@@ -193,7 +251,7 @@ export class PdfDocument {
     if (typeof Module._wpdf_open_stream !== 'function') {
       throw new Error('wasm-pdf-reader: this build has no ranged-source support (rebuild the wasm)');
     }
-    const { installRangeFetcher } = await import('./range-source.js');
+    const { installRangeFetcher, clearRangeFetcher } = await import('./range-source.js');
     const { size } = installRangeFetcher(spec);
 
     let handle = 0;
@@ -219,6 +277,11 @@ export class PdfDocument {
     const doc = new PdfDocument(Module, handle, null, options);
     doc.filename = options.filename || spec.url || (spec.blob && spec.blob.name) || '';
     doc.ranged = true;
+    // The fetch hook is per worker (one ranged document at a time), so it has to
+    // be released with the document. Leaking it here made the *next* big file
+    // throw "one ranged document per worker", fall back to inline and copy the
+    // whole file into wasm — the out-of-memory this path exists to avoid.
+    doc._clearRange = clearRangeFetcher;
     return doc;
   }
 
@@ -598,6 +661,12 @@ export class PdfDocument {
     this._cache?.clear();
     this.Module._wpdf_close(this._handle);
     this._handle = 0;
+    // Free the worker's range hook so the next ranged document can install its
+    // own (a per-worker singleton — see range-source.js).
+    if (this._clearRange) {
+      try { this._clearRange(); } catch { /* already gone */ }
+      this._clearRange = null;
+    }
   }
 }
 

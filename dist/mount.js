@@ -7,6 +7,7 @@
 
 import { PdfDocument } from './document.js';
 import { buildTextLayer } from './text.js';
+import { turnedPageBox, normaliseRotation, stepRotation } from './rotation.js';
 
 const ICONS = {
   prev: '‹',
@@ -15,6 +16,8 @@ const ICONS = {
   zoomIn: '+',
   fitWidth: '⇔',
   fitPage: '⤢',
+  rotateLeft: '⟲',
+  rotateRight: '⟳',
   thumbnails: '▤',
   print: '⎙',
 };
@@ -27,6 +30,8 @@ export const defaultLabels = {
   zoomOut: 'Zoom out',
   fitWidth: 'Fit width',
   fitPage: 'Fit page',
+  rotateLeft: 'Rotate counter-clockwise',
+  rotateRight: 'Rotate clockwise',
   thumbnails: 'Thumbnails',
   print: 'Print',
   page: 'Page',
@@ -71,6 +76,8 @@ function button(className, label, text) {
  * @param {number} [options.page=0]   zero-based page to show
  * @param {number} [options.scale=1.5] CSS pixels per point
  * @param {'none'|'width'|'page'|'auto'} [options.fit='auto']  'auto' fits width on first open
+ * @param {0|90|180|270} [options.rotation=0] view rotation added on top of each page's /Rotate
+ * @param {(rotation:number)=>void} [options.onRotationChange]
  * @param {boolean} [options.continuous=false] continuous scroll instead of one page
  * @param {boolean} [options.toolbar=true]  build the default toolbar
  * @param {HTMLElement|Function} [options.toolbarSlot] custom toolbar (node, or fn(state) -> node)
@@ -98,6 +105,7 @@ export function mountPdfReader(target, options = {}) {
     page: 0,
     scale: 1.5,
     fit: 'auto',
+    rotation: 0,
     continuous: false,
     toolbar: true,
     status: true,
@@ -118,6 +126,8 @@ export function mountPdfReader(target, options = {}) {
   let zoomEl = null;
   let prevBtn = null;
   let nextBtn = null;
+  let rotateLeftBtn = null;
+  let rotateRightBtn = null;
   let thumbsBtn = null;
   let printBtn = null;
 
@@ -149,6 +159,15 @@ export function mountPdfReader(target, options = {}) {
     const fitPage = button('wpdf-button', labels.fitPage, ICONS.fitPage);
     zoomGroup.append(zoomOut, zoomEl, zoomIn, fitWidth, fitPage);
     toolbarEl.appendChild(zoomGroup);
+
+    // Turning the view is not editing the page: the rotation stays on the reader
+    // and is applied when the next page is drawn, so a document's own /Rotate is
+    // never rewritten.
+    const rotateGroup = el('div', 'wpdf-toolbar__group');
+    rotateLeftBtn = button('wpdf-button', labels.rotateLeft, ICONS.rotateLeft);
+    rotateRightBtn = button('wpdf-button', labels.rotateRight, ICONS.rotateRight);
+    rotateGroup.append(rotateLeftBtn, rotateRightBtn);
+    toolbarEl.appendChild(rotateGroup);
 
     const viewGroup = el('div', 'wpdf-toolbar__group');
     thumbsBtn = button('wpdf-button', labels.thumbnails, ICONS.thumbnails);
@@ -190,6 +209,7 @@ export function mountPdfReader(target, options = {}) {
     page: Math.max(0, opts.page | 0),
     scale: opts.scale,
     fit: opts.fit,
+    rotation: normaliseRotation(opts.rotation),
     status: 'idle',       // idle | loading | ready | error
     error: null,
     renderMs: 0,
@@ -207,6 +227,7 @@ export function mountPdfReader(target, options = {}) {
       pageCount: count,
       scale: state.scale,
       fit: state.fit,
+      rotation: state.rotation,
       status: state.status,
       error: state.error,
       filename: state.doc?.filename || '',
@@ -254,6 +275,7 @@ export function mountPdfReader(target, options = {}) {
     if (state.doc) bits.push(`Page ${state.page + 1} of ${state.doc.pageCount}`);
     if (state.doc?.filename) bits.push(state.doc.filename);
     if (size) bits.push(`${Math.round(size.width)} × ${Math.round(size.height)} pt`);
+    if (state.rotation) bits.push(`${state.rotation}°`);
     bits.push(`${Math.round(state.scale * 150)} dpi`);
     if (state.renderMs) bits.push(`${state.renderMs} ms`);
     const warns = state.doc?.warnings?.length || 0;
@@ -266,15 +288,21 @@ export function mountPdfReader(target, options = {}) {
     if (typeof fn === 'function') fn(value);
   }
 
+  /** The turned box of a page at `scale` — what the viewport has to fit. */
+  function pageBox(scale, index = state.page) {
+    const size = state.doc?.getPageSize(index) || { width: 612, height: 792 };
+    return turnedPageBox(size, scale, state.rotation);
+  }
+
   function pageScale() {
-    const size = state.doc?.getPageSize(state.page) || { width: 612, height: 792 };
+    const box = pageBox(1);
     const pad = 32;
     // Before the first layout pass the viewport can report 0; fall back to the
     // window so the first page is never rendered at thumbnail size.
     const vw = Math.max(120, (viewport.clientWidth || window.innerWidth) - pad);
     const vh = Math.max(120, (viewport.clientHeight || window.innerHeight - 120) - pad);
-    if (state.fit === 'width') return vw / size.width;
-    if (state.fit === 'page') return Math.min(vw / size.width, vh / size.height);
+    if (state.fit === 'width') return vw / box.width;
+    if (state.fit === 'page') return Math.min(vw / box.width, vh / box.height);
     return state.scale;
   }
 
@@ -285,12 +313,36 @@ export function mountPdfReader(target, options = {}) {
 
   function makePage(scale) {
     const pageEl = el('div', 'wpdf-page');
-    const canvas = el('canvas', 'wpdf-page__canvas');
-    pageEl.appendChild(canvas);
-    const size = state.doc.getPageSize(state.page);
-    pageEl.style.width = `${size.width * scale}px`;
-    pageEl.style.height = `${size.height * scale}px`;
+    const box = pageBox(scale);
+    pageEl.style.width = `${box.width}px`;
+    pageEl.style.height = `${box.height}px`;
+    pageEl.appendChild(turnLayer(box, scale));
     return pageEl;
+  }
+
+  /**
+   * The turning layer: canvas, text, links and highlights all live inside it, so
+   * one transform keeps them registered with each other. It is positioned in
+   * unrotated page space and the transform maps that box exactly onto the outer
+   * (already swapped) page box.
+   */
+  function turnLayer(box, scale) {
+    const turn = el('div', 'wpdf-page__turn');
+    turn.style.width = `${box.innerWidth}px`;
+    turn.style.height = `${box.innerHeight}px`;
+    turn.style.transform = box.transform;
+    turn.dataset.rotation = String(box.rotation);
+    const canvas = el('canvas', 'wpdf-page__canvas');
+    canvas.style.width = `${box.innerWidth}px`;
+    canvas.style.height = `${box.innerHeight}px`;
+    turn.appendChild(canvas);
+    turn.dataset.scale = String(scale);
+    return turn;
+  }
+
+  /** The turning layer of a page element, if it has one. */
+  function turnOf(pageEl) {
+    return pageEl.querySelector(':scope > .wpdf-page__turn');
   }
 
   async function renderSingle() {
@@ -312,19 +364,22 @@ export function mountPdfReader(target, options = {}) {
       if (token !== renderToken || destroyed) return;
       state.renderMs = Math.round(performance.now() - started);
       emit('onRender', { page: state.page, scale, ...out });
+      const turn = turnOf(pageEl) || pageEl;
       if (opts.textLayer !== false) {
         const size = state.doc.getPageSize(state.page);
         const text = await loadText(state.page);
         if (token !== renderToken || destroyed) return;
-        pageEl.appendChild(buildTextLayer(text, {
+        turn.appendChild(buildTextLayer(text, {
           scale, height: size.height, boxY0: size.boxY0,
         }));
       }
       const linkEl = await linkLayer(pageEl, state.page);
-      if (linkEl) pageEl.appendChild(linkEl);
+      if (linkEl) turn.appendChild(linkEl);
+      // Selection bars are painted in screen space relative to the *outer* page
+      // box, so they stay outside the turning layer.
       selectionLayer(pageEl);
       const hl = opts.highlights?.(state.page, scale) || [];
-      if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));
+      if (hl.length) turn.appendChild(highlightLayer(hl, pageEl));
     } catch (err) {
       if (token === renderToken) showError(err);
     }
@@ -350,11 +405,11 @@ export function mountPdfReader(target, options = {}) {
     }, { root: viewport, rootMargin: '50% 0px 50% 0px' });
 
     for (let i = 0; i < state.doc.pageCount; i++) {
-      const size = state.doc.getPageSize(i);
+      const box = pageBox(scale, i);
       const pageEl = el('div', 'wpdf-page');
       pageEl.dataset.page = String(i);
-      pageEl.style.width = `${size.width * scale}px`;
-      pageEl.style.height = `${size.height * scale}px`;
+      pageEl.style.width = `${box.width}px`;
+      pageEl.style.height = `${box.height}px`;
       const ph = el('div', 'wpdf-page__placeholder');
       ph.style.width = '100%';
       ph.style.height = '100%';
@@ -375,13 +430,16 @@ export function mountPdfReader(target, options = {}) {
   }
 
   async function renderInto(pageEl, index, scale, token) {
-    if (pageEl.dataset.rendered === String(scale)) return;
-    pageEl.dataset.rendered = String(scale);
-    let canvas = pageEl.querySelector('canvas');
-    if (!canvas) {
-      canvas = el('canvas', 'wpdf-page__canvas');
-      pageEl.replaceChildren(canvas);
+    const rotationKey = `${scale}:${state.rotation}`;
+    if (pageEl.dataset.rendered === rotationKey) return;
+    pageEl.dataset.rendered = rotationKey;
+    let turn = turnOf(pageEl);
+    if (!turn) {
+      const box = pageBox(scale, index);
+      pageEl.replaceChildren(turnLayer(box, scale));
+      turn = turnOf(pageEl);
     }
+    const canvas = turn.querySelector('canvas');
     try {
       const out = await state.doc.renderToCanvas(canvas, index, {
         scale,
@@ -396,15 +454,15 @@ export function mountPdfReader(target, options = {}) {
         const size = state.doc.getPageSize(index);
         const text = await loadText(index);
         if (token !== renderToken || destroyed) return;
-        pageEl.appendChild(buildTextLayer(text, {
+        turn.appendChild(buildTextLayer(text, {
           scale, height: size.height, boxY0: size.boxY0,
         }));
       }
       const linkEl = await linkLayer(pageEl, index);
-      if (linkEl) pageEl.appendChild(linkEl);
+      if (linkEl) turn.appendChild(linkEl);
       selectionLayer(pageEl);
       const hl = opts.highlights?.(index, scale) || [];
-      if (hl.length) pageEl.appendChild(highlightLayer(hl, pageEl));
+      if (hl.length) turn.appendChild(highlightLayer(hl, pageEl));
       if (index === state.page) updateStatus();
     } catch (err) {
       pageEl.dataset.rendered = '';
@@ -613,6 +671,25 @@ export function mountPdfReader(target, options = {}) {
     emit('onScaleChange', next);
   }
 
+  // Rotation is view state, not an edit: the bitmap is reused, so this is a
+  // re-layout and (via the page cache) an immediate repaint. The document's own
+  // /Rotate is never touched.
+  function setRotation(next) {
+    const rot = normaliseRotation(next);
+    if (rot === state.rotation) return;
+    state.rotation = rot;
+    opts.rotation = rot;
+    if (state.doc) opts.continuous ? renderContinuous() : renderSingle();
+    updateToolbar();
+    updateStatus();
+    emit('onRotationChange', rot);
+  }
+
+  /** Turn the view 90° clockwise (dir > 0) or counter-clockwise. */
+  function rotateBy(dir = 1) {
+    setRotation(stepRotation(state.rotation, dir));
+  }
+
   // Switch between one-page and continuous scrolling without remounting, which
   // is what the demo used to do (and it lost scroll position and search hits).
   function setContinuous(on) {
@@ -674,6 +751,8 @@ export function mountPdfReader(target, options = {}) {
       if (!b) return;
       if (b === prevBtn) goToPage(state.page - 1);
       else if (b === nextBtn) goToPage(state.page + 1);
+      else if (b === rotateLeftBtn) rotateBy(-1);
+      else if (b === rotateRightBtn) rotateBy(1);
       else if (b.title === labels.zoomIn) setScale(effectiveScale() * 1.25);
       else if (b.title === labels.zoomOut) setScale(effectiveScale() / 1.25);
       else if (b.title === labels.fitWidth) setScale(state.scale, 'width');
@@ -892,6 +971,10 @@ export function mountPdfReader(target, options = {}) {
     zoomOut: () => setScale(effectiveScale() / 1.25),
     fitWidth: () => setScale(state.scale, 'width'),
     fitPage: () => setScale(state.scale, 'page'),
+    setRotation,
+    rotateLeft: () => rotateBy(-1),
+    rotateRight: () => rotateBy(1),
+    get rotation() { return state.rotation; },
     setFile: (source, o) => setDocument(source, o),
     setTheme: (theme) => applyTheme(root, theme),
     setInverted: (on) => root.classList.toggle('wpdf-root--invert', !!on),

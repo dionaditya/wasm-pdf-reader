@@ -2,11 +2,13 @@ import { jsx, jsxs } from "react/jsx-runtime";
 import React, { useEffect, useRef } from "react";
 import { usePdfPage, useInView } from "./hooks.js";
 import { buildTextLayer } from "../text.js";
+import { turnedPageBox } from "../rotation.js";
 function PdfPage(props) {
   const {
     document: doc,
     page = 0,
     scale = 1.5,
+    rotation = 0,
     dpr,
     pixelTransform,
     renderer,
@@ -30,8 +32,11 @@ function PdfPage(props) {
     renderer
   });
   const size = doc ? doc.getPageSize(page) : { width: 612, height: 792 };
-  const width = cssWidth || size.width * scale;
-  const height = cssHeight || size.height * scale;
+  const innerWidth = cssWidth || size.width * scale;
+  const innerHeight = cssHeight || size.height * scale;
+  const box = turnedPageBox({ width: innerWidth, height: innerHeight }, 1, rotation);
+  const width = box.width;
+  const height = box.height;
   const textRef = useRef(null);
   useEffect(() => {
     const host = textRef.current;
@@ -84,19 +89,34 @@ function PdfPage(props) {
       "data-page": page,
       ...rest,
       children: [
-        /* @__PURE__ */ jsx(
-          "canvas",
+        /* @__PURE__ */ jsxs(
+          "div",
           {
-            ref: canvasRef,
-            className: `wpdf-page__canvas ${canvasClassName}`.trim(),
-            "aria-label": `Page ${page + 1}`,
-            role: "img"
+            className: "wpdf-page__turn",
+            style: {
+              width: `${innerWidth}px`,
+              height: `${innerHeight}px`,
+              transform: box.transform
+            },
+            "data-rotation": box.rotation,
+            children: [
+              /* @__PURE__ */ jsx(
+                "canvas",
+                {
+                  ref: canvasRef,
+                  className: `wpdf-page__canvas ${canvasClassName}`.trim(),
+                  style: { width: `${innerWidth}px`, height: `${innerHeight}px` },
+                  "aria-label": `Page ${page + 1}`,
+                  role: "img"
+                }
+              ),
+              /* @__PURE__ */ jsx("div", { className: "wpdf-page__text", ref: textRef, "aria-hidden": textLayer === false }),
+              children && /* @__PURE__ */ jsx("div", { className: "wpdf-page__overlay", children })
+            ]
           }
         ),
-        /* @__PURE__ */ jsx("div", { className: "wpdf-page__text", ref: textRef, "aria-hidden": textLayer === false }),
         !stats && !error && (placeholder || (rendering ? null : null)),
-        error && /* @__PURE__ */ jsx("div", { className: "wpdf-page__placeholder", style: { position: "absolute", inset: 0 }, children: error.message }),
-        children && /* @__PURE__ */ jsx("div", { className: "wpdf-page__overlay", children })
+        error && /* @__PURE__ */ jsx("div", { className: "wpdf-page__placeholder", style: { position: "absolute", inset: 0 }, children: error.message })
       ]
     }
   );

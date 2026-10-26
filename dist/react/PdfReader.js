@@ -11,6 +11,7 @@ import React, {
 import { usePdfDocument } from "./hooks.js";
 import { PdfPage } from "./PdfPage.js";
 import { PdfToolbar } from "./PdfToolbar.js";
+import { turnedPageBox, normaliseRotation, stepRotation } from "../rotation.js";
 const PAD = 32;
 function themeVars(theme) {
   if (!theme) return void 0;
@@ -30,6 +31,8 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     onPageChange,
     scale: scaleProp,
     defaultScale = 1.5,
+    defaultRotation = 0,
+    onRotationChange,
     fit: fitProp,
     onZoom,
     continuous = false,
@@ -68,6 +71,7 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
   const Page = components.Page || PdfPage;
   const [innerPage, setInnerPage] = useState(Math.max(0, defaultPage | 0));
   const [innerScale, setInnerScale] = useState(defaultScale);
+  const [rotation, setRotationState] = useState(normaliseRotation(defaultRotation));
   const [fit, setFit] = useState(fitProp ?? "auto");
   const [manualFit, setManualFit] = useState(false);
   const [viewportBox, setViewportBox] = useState({ width: 0, height: 0 });
@@ -96,14 +100,15 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     if (!size) return controlledScale;
     const fitMode = activeFit === void 0 || activeFit === null ? "none" : activeFit;
     if (fitMode === "none") return controlledScale;
+    const box = turnedPageBox(size, 1, rotation);
     const availW = Math.max(120, (viewportBox.width || 800) - PAD);
     const availH = Math.max(120, (viewportBox.height || 800) - PAD);
-    let s = fitMode === "page" ? Math.min(availW / size.width, availH / size.height) : availW / size.width;
-    if (typeof window !== "undefined" && size.width > 0) {
-      s = Math.min(s, window.innerWidth * 0.98 / size.width);
+    let s = fitMode === "page" ? Math.min(availW / box.width, availH / box.height) : availW / box.width;
+    if (typeof window !== "undefined" && box.width > 0) {
+      s = Math.min(s, window.innerWidth * 0.98 / box.width);
     }
     return Math.max(0.1, Math.min(8, s || controlledScale));
-  }, [doc, pageCount, page, controlledScale, activeFit, viewportBox]);
+  }, [doc, pageCount, page, controlledScale, activeFit, viewportBox, rotation]);
   useEffect(() => {
     onLoad?.({ document: doc, pageCount, metadata, warnings });
   }, [doc, pageCount, metadata, warnings, onLoad]);
@@ -134,6 +139,20 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     setFit(mode);
     onZoom?.(effectiveScale);
   }, [effectiveScale, onZoom]);
+  const rotate = useCallback((dir = 1) => {
+    setRotationState((prev) => {
+      const next = stepRotation(prev, dir);
+      if (next !== prev) onRotationChange?.(next);
+      return next;
+    });
+  }, [onRotationChange]);
+  const rotateTo = useCallback((value) => {
+    const next = normaliseRotation(value);
+    setRotationState((prev) => {
+      if (next !== prev) onRotationChange?.(next);
+      return next;
+    });
+  }, [onRotationChange]);
   useImperativeHandle(ref, () => ({
     get document() {
       return doc;
@@ -153,6 +172,12 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     zoomOut: () => setScale(effectiveScale / 1.25),
     fitWidth: () => fitTo("width"),
     fitPage: () => fitTo("page"),
+    get rotation() {
+      return rotation;
+    },
+    setRotation: rotateTo,
+    rotateLeft: () => rotate(-1),
+    rotateRight: () => rotate(1),
     reload,
     /** Plain text for a page (extracts and caches it in wasm). A worker-backed
      *  document returns a Promise, so `await` it when `worker` is set. */
@@ -160,7 +185,19 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     /** All matches for a query: {page, index, length, line, rects}. Returns a
      *  Promise on a worker-backed document. */
     search: (q, o) => doc?.search(q, o) ?? []
-  }), [doc, page, effectiveScale, pageCount, goToPage, setScale, fitTo, reload]);
+  }), [
+    doc,
+    page,
+    effectiveScale,
+    pageCount,
+    goToPage,
+    setScale,
+    fitTo,
+    reload,
+    rotation,
+    rotateTo,
+    rotate
+  ]);
   const onKeyDown = useCallback((ev) => {
     const held = ev.ctrlKey || ev.metaKey;
     const keys = {
@@ -272,14 +309,17 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
     return parts;
   }, [searchHits, highlights, pageOverlay, onLink, doc, effectiveScale, goToPage, pageCount]);
   const pageSize = doc && pageCount ? doc.getPageSize(Math.min(page, pageCount - 1)) : null;
+  const turnedBox = turnedPageBox(pageSize || { width: 612, height: 792 }, 1, rotation);
   const titleText = title || metadata?.Title || (typeof file === "object" && file ? file.name : "") || "";
   const toolbarProps = {
     page,
     pageCount,
     scale: effectiveScale,
+    rotation,
     onPageChange: goToPage,
     onZoom: setScale,
     onFit: fitTo,
+    onRotate: rotate,
     labels,
     title: toolbar === true ? titleText : void 0
   };
@@ -307,6 +347,7 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
       document: doc,
       page: index,
       scale: effectiveScale,
+      rotation,
       dpr,
       pixelTransform,
       renderer,
@@ -343,11 +384,15 @@ const PdfReader = forwardRef(function PdfReader2(props, ref) {
         showStatus && /* @__PURE__ */ jsxs("div", { className: "wpdf-status", children: [
           /* @__PURE__ */ jsx("span", { children: pageCount ? `Page ${page + 1} of ${pageCount}` : "\u2014" }),
           pageSize && /* @__PURE__ */ jsxs("span", { children: [
-            Math.round(pageSize.width),
+            Math.round(turnedBox.width),
             " \xD7 ",
-            Math.round(pageSize.height),
+            Math.round(turnedBox.height),
             " pt"
           ] }),
+          rotation ? /* @__PURE__ */ jsxs("span", { children: [
+            rotation,
+            "\xB0"
+          ] }) : null,
           /* @__PURE__ */ jsxs("span", { children: [
             Math.round(effectiveScale * 150),
             " dpi"
