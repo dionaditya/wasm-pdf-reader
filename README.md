@@ -229,6 +229,14 @@ the source of truth: 15 areas weighted for a document *viewer* (what a host app
 embeds), each score tied to a named missing capability, so a number moves only
 when the capability does. Referenced builds: pdf.js 6.4.299, MuPDF.js 1.28.1.
 
+This is a capability count, not a speed or fidelity benchmark. Against the
+*native* rasterizers (Ghostscript, MuPDF, Pdfium, Xpdf, the Java engines) the
+only serious public study is Alfresco's 2018 eight-engine comparison — what it
+says, what does not transfer to a browser engine, our measured ms/page per
+fixture and the four cells where we would score at the bottom are in
+[`docs/BENCHMARK.md`](docs/BENCHMARK.md). Reproduce the throughput with
+`node scripts/bench.mjs`.
+
 ### Capability parity
 
 | Area | Weight | This engine | pdf.js | MuPDF.js |
