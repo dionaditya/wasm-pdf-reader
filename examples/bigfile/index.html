@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wasm-pdf-reader — generate a 2–4 GB PDF</title>
+<link rel="stylesheet" href="/dist/styles.css">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b0f19; color: #e8ecf4;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header { padding: 14px 16px; background: #111827; border-bottom: 1px solid #1f2937; }
+  header h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  header h1 span { color: #7dd3fc; }
+  header p { margin: 0; font-size: 12.5px; color: #94a3b8; }
+  .sizes { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 16px 0; }
+  .sizes button {
+    font: inherit; font-size: 13px; color: #e5e7eb; background: #1f2937;
+    border: 1px solid #334155; border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  }
+  .sizes button:hover { background: #273449; }
+  .sizes button.refuse { border-color: #7f1d1d; color: #fca5a5; }
+  .sizes button:disabled { opacity: .5; cursor: default; }
+  .opts { display: flex; gap: 10px; align-items: center; padding: 8px 16px 0; font-size: 12.5px; color: #94a3b8; }
+  .opts input { width: 74px; font: inherit; background: #0b1220; color: #e5e7eb; border: 1px solid #334155; border-radius: 6px; padding: 4px 8px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #view { flex: 1; overflow: auto; padding: 20px; display: flex; justify-content: center; align-items: flex-start; }
+  #view canvas { box-shadow: 0 12px 40px rgba(0,0,0,.55); background: #fff; }
+  aside { width: 350px; padding: 16px; background: #0f172a; border-left: 1px solid #1f2937; font-size: 12.5px; overflow: auto; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  td { padding: 3px 0; vertical-align: top; }
+  td:first-child { color: #94a3b8; width: 46%; }
+  .ok { color: #6ee7b7; } .warn { color: #fbbf24; } .err { color: #f87171; }
+  .hint { color: #94a3b8; font-size: 12px; margin: 0 0 12px; }
+  code { background: #0b1220; border: 1px solid #1f2937; border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Generate a <span>2–4 GB</span> PDF and open it ranged</h1>
+  <p>The server synthesises the file on request — a header, a hole of zeros, and every object in the last few KB — so nothing is written to disk.
+     The reader pulls only the byte ranges it needs, so a 4 GiB file still costs a few hundred KB and a flat heap.</p>
+</header>
+
+<div class="sizes">
+  <button data-gib="2">2 GiB</button>
+  <button data-gib="3">3 GiB</button>
+  <button data-gib="3.5">3.5 GiB</button>
+  <button data-gib="3.99">3.99 GiB</button>
+  <button data-gib="4">4 GiB (exactly 2³²)</button>
+  <button data-gib="4.1" class="refuse" title="above the ranged reader's limit — this must be refused by name">4.1 GiB → refusal</button>
+</div>
+<div class="opts">
+  <label>pages <input id="pages" type="number" min="1" max="200" value="12"></label>
+  <span id="status">pick a size</span>
+</div>
+
+<main>
+  <div id="view"><p class="hint">A 4 GiB PDF cannot fit in wasm32's address space, so the heap was never the answer — offsets were. Each xref entry here lands above 2³² − 1 MiB, which is where 32-bit offset bugs show up.</p></div>
+  <aside>
+    <h2>What the engine did</h2>
+    <table>
+      <tr><td>file</td><td id="file">—</td></tr>
+      <tr><td>generated</td><td id="gen">—</td></tr>
+      <tr><td>mode</td><td id="mode">—</td></tr>
+      <tr><td>ranged</td><td id="ranged">—</td></tr>
+      <tr><td>pages</td><td id="pagesCount">—</td></tr>
+      <tr><td>bytes fetched</td><td id="fetched">—</td></tr>
+      <tr><td>range requests</td><td id="requests">—</td></tr>
+      <tr><td>fraction read</td><td id="percent">—</td></tr>
+      <tr><td>resident window</td><td id="window">—</td></tr>
+      <tr><td>wasm heap</td><td id="heap">—</td></tr>
+      <tr><td>open</td><td id="openMs">—</td></tr>
+      <tr><td>render</td><td id="renderMs">—</td></tr>
+    </table>
+    <p class="hint" id="note"></p>
+  </aside>
+</main>
+
+<script type="module">
+import { PdfDocument } from '/dist/index.js';
+
+const el = (id) => document.getElementById(id);
+const set = (id, text, cls) => { el(id).textContent = text; if (cls) el(id).className = cls; };
+const bytes = (n) => {
+  if (!Number.isFinite(n)) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1073741824) return `${(n / 1048576).toFixed(2)} MB`;
+  return `${(n / 1073741824).toFixed(3)} GiB`;
+};
+const GIB = 1073741824;
+
+let doc = null;
+
+async function run(gib) {
+  const size = Math.round(gib * GIB);
+  const pages = Math.max(1, Math.min(200, Number(el('pages').value) || 12));
+  const url = `/bigfile/generate?size=${size}&pages=${pages}`;
+  for (const b of document.querySelectorAll('.sizes button')) b.disabled = true;
+  doc?.close();
+  doc = null;
+  set('status', `generating ${bytes(size)}…`, 'warn');
+  set('file', bytes(size));
+  set('gen', '—');
+  set('note', '');
+  // Clear every cell from the previous run: a stale value here makes the page
+  // (and any test driving it) read a previous document's numbers.
+  for (const id of ['mode', 'ranged', 'pagesCount', 'fetched', 'requests', 'percent',
+                    'window', 'heap', 'openMs', 'renderMs', 'renderMs']) set(id, '—');
+  el('view').innerHTML = '<p class="hint">opening…</p>';
+  const t0 = performance.now();
+  try {
+    // The size is known up front, so no HEAD round-trip is needed.
+    doc = await PdfDocument.open({ url, size }, { worker: true });
+    const openMs = performance.now() - t0;
+    set('gen', 'streamed on demand', 'ok');
+
+    const tRender = performance.now();
+    const out = await doc.render(0, { scale: 1.2 });
+    const renderMs = performance.now() - tRender;
+    const canvas = document.createElement('canvas');
+    canvas.width = out.width;
+    canvas.height = out.height;
+    canvas.getContext('2d').putImageData(out.imageData, 0, 0);
+    el('view').replaceChildren(canvas);
+
+    const stats = await doc.stats();
+    const fetched = stats.source ? stats.source.fetched : 0;
+    set('mode', doc.mode, doc.mode === 'worker' ? 'ok' : 'err');
+    set('ranged', String(doc.ranged), doc.ranged ? 'ok' : 'err');
+    set('pagesCount', String(doc.pageCount));
+    set('fetched', bytes(fetched));
+    set('requests', String(stats.source ? stats.source.fetches : 0));
+    set('percent', `${((fetched / size) * 100).toFixed(5)} %`);
+    set('window', bytes(stats.source ? stats.source.windowBytes : 0));
+    set('heap', bytes(stats.heapBytes));
+    set('openMs', `${Math.round(openMs)} ms`);
+    set('renderMs', `${Math.round(renderMs)} ms`);
+
+    set('status', `opened ${bytes(size)} — ${bytes(fetched)} read`, 'ok');
+    el('note').textContent = doc.ranged
+      ? 'Every xref offset in this file is past 2³² − 1 MiB. A byte of the hole was never sent: the reader asked for ranges and the server answered only those.'
+      : 'Not ranged — the file was copied into wasm, which cannot work at this size.';
+    el('note').className = doc.ranged ? 'hint' : 'hint err';
+  } catch (err) {
+    const message = String(err && err.message ? err.message : err);
+    set('status', 'refused', 'err');
+    set('mode', 'error', 'err');
+    set('note', message);
+    el('note').className = 'hint err';
+    el('view').innerHTML = `<p class="err">${message.replace(/[<]/g, '&lt;')}</p>`;
+  } finally {
+    for (const b of document.querySelectorAll('.sizes button')) b.disabled = false;
+  }
+}
+
+for (const button of document.querySelectorAll('.sizes button')) {
+  button.addEventListener('click', () => run(Number(button.dataset.gib)));
+}
+</script>
+</body>
+</html>

@@ -18,6 +18,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildTail, readSlice } from '../scripts/bigpdf.mjs';
 
 const argRootIdx = process.argv.indexOf('--root');
 const root = argRootIdx > 0
@@ -65,6 +66,75 @@ const server = createServer(async (req, res) => {
     let file = join(root, path);
     if (!file.startsWith(root + sep) && file !== root) {
       res.writeHead(403).end('forbidden');
+      return;
+    }
+    // /bigfile/generate?size=…&pages=… — a synthetic PDF of any size, answered
+    // from three virtual segments (header, a hole of zeros, the object tail) so
+    // a 4 GiB URL costs no disk and no memory. The big-file lab page opens it
+    // with ranged loading. See scripts/bigpdf.mjs.
+    if (url.pathname === '/bigfile/generate') {
+      const total = Math.floor(Number(url.searchParams.get('size')) || 0);
+      const pages = Math.min(Math.max(Number(url.searchParams.get('pages')) || 12, 1), 200);
+      if (!(total > 64 * 1024) || total > 16 * 2 ** 30) {
+        res.writeHead(400, { 'content-type': 'text/plain' })
+          .end('size must be between 64 KB and 16 GiB');
+        return;
+      }
+      const sizeText = `${(total / 2 ** 30).toFixed(2)} GiB`;
+      const { header, tailStart, tail } = buildTail(total, pages, sizeText);
+      const range = ranges ? parseRange(req.headers.range, total) : null;
+      const base = {
+        'content-type': 'application/pdf',
+        'accept-ranges': 'bytes',
+        'cache-control': 'no-store',
+      };
+      if (req.method === 'HEAD') {
+        res.writeHead(range ? 206 : 200, { ...base, 'content-length': total }).end();
+        return;
+      }
+      if (range) {
+        if (range.start >= total) {
+          res.writeHead(416, { 'content-range': `bytes */${total}` }).end();
+          return;
+        }
+        const end = Math.min(range.end, total - 1);
+        res.writeHead(206, {
+          ...base,
+          'content-range': `bytes ${range.start}-${end}/${total}`,
+          'content-length': end - range.start + 1,
+        });
+        let at = range.start;
+        const CH = 4 << 20;
+        const pump = () => {
+          while (at <= end) {
+            const stop = Math.min(end, at + CH - 1);
+            const buf = readSlice(header, tailStart, tail, at, stop);
+            at = stop + 1;
+            if (!res.write(buf)) { res.once('drain', pump); return; }
+          }
+          res.end();
+        };
+        pump();
+        return;
+      }
+      // No Range: the whole file. Correct, just expensive — that is the point
+      // the page's "server ignores Range" note makes.
+      res.writeHead(200, { ...base, 'content-length': total });
+      res.write(header);
+      let written = header.length;
+      const zeros = Buffer.alloc(1 << 20);
+      const flush = () => {
+        while (written < tailStart) {
+          const n = Math.min(zeros.length, tailStart - written);
+          written += n;
+          if (!res.write(n === zeros.length ? zeros : zeros.subarray(0, n))) {
+            res.once('drain', flush);
+            return;
+          }
+        }
+        res.end(tail);
+      };
+      flush();
       return;
     }
     let info = await stat(file).catch(() => null);

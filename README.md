@@ -579,6 +579,7 @@ node examples/server.mjs 4444      # http://localhost:4444/
 
 - `http://localhost:5177/examples/vanilla/`
 - `http://localhost:5177/examples/react/`
+- `http://localhost:5177/examples/bigfile/` — synthesises a 2–4 GiB PDF on request (`/bigfile/generate`) and opens it ranged; no file is ever written.
 - `http://localhost:5177/examples/ranged/` — opens a 117 MB fixture through
   `Range` requests and reports the bytes actually read (see below)
 
@@ -616,6 +617,7 @@ npm run test:e2e      # headless Chrome: 20 steps — both demos, worker mode, r
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:ranged   # 117 MB fixture: ranged open, fetch budget, cache budget (10 steps)
 npm run test:ranged4g # sparse 4 GiB fixture: offsets past 2^32, fetch budget, the 4 GiB refusal (6 steps)
+npm run test:bigfile   # the /examples/bigfile/ page: generate 2–4 GiB on the fly and open it ranged (5 steps)
 npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus
 scripts/verify_encryption.sh   # keys vs qpdf for every revision (needs qpdf)
 npm run test:visual   # rewrite the pixel baseline after an intended change

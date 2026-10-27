@@ -350,7 +350,7 @@ static const size_t kMaxWindow = 1u << 20;      // sequential: up to 1 MB
 
 bool Document::cover(uint64_t off, size_t need) {
     if (!src) return false;
-    const size_t n = fileSize();
+    const uint64_t n = fileSize();
     if (off > n) return false;
     if (need > n - off) return false;                 // would run past EOF
     if (directBase() && !windowForced) return true;   // whole file resident
@@ -367,8 +367,11 @@ bool Document::cover(uint64_t off, size_t need) {
     if (grow > kMaxWindow) grow = kMaxWindow;
     windowBytes = grow;
     size_t want = need > grow ? need : grow;
-    size_t avail = n - off;
-    if (want > avail) want = avail;
+    // 64-bit on purpose: at off = 0 with a file of exactly 2^32 bytes,
+    // (size_t)avail truncates to 0, cover() fails on the first byte, and the
+    // header scan below then walks the whole file 64 KB at a time.
+    uint64_t avail = n - off;
+    if ((uint64_t)want > avail) want = (size_t)avail;
     if (!want) return false;
     win.resize(want);
     size_t got = src->fetch(off, win.data(), want);
@@ -387,13 +390,13 @@ int Document::byteAt(uint64_t off) {
 
 std::string Document::readBytes(uint64_t off, size_t len) {
     std::string out;
-    const size_t n = fileSize();
+    const uint64_t n = fileSize();
     if (off >= n || !len) return out;
     if (len > n - off) len = n - off;
     const uint8_t* d = directBase();
     if (d && !windowForced) { out.assign((const char*)d + off, len); return out; }
     out.reserve(len);
-    size_t o = off, left = len;
+    uint64_t o = off; size_t left = len;
     while (left) {
         size_t step = left < windowBytes ? left : windowBytes;
         if (!cover(o, step)) break;
@@ -407,13 +410,14 @@ std::string Document::readBytes(uint64_t off, size_t len) {
     return out;
 }
 
-uint64_t Document::findForward(uint64_t from, const char* needle, size_t nl) {
-    const size_t n = fileSize();
+uint64_t Document::findForward(uint64_t from, const char* needle, size_t nl, uint64_t maxBytes) {
+    const uint64_t n = fileSize();
     const size_t CH = 1 << 16;
+    const uint64_t stop = (maxBytes && from + maxBytes < n) ? from + maxBytes : n;
     std::string carry;
-    for (size_t off = from; off < n; off += CH) {
+    for (uint64_t off = from; off < stop; off += CH) {
         std::string chunk = carry + readBytes(off, CH);
-        size_t base = off - carry.size();
+        uint64_t base = off - carry.size();
         size_t hit = chunk.find(needle, 0);
         while (hit != std::string::npos) {
             if (base + hit + nl <= n) return base + hit;
@@ -469,13 +473,15 @@ bool Document::loadSource(std::unique_ptr<ByteSource> s) {
     src = std::move(s);
     win.clear();
     winOff = 0;
-    const size_t n = fileSize();
+    const uint64_t n = fileSize();
     if (n < 8) { error = "file too small"; return false; }
 
     // %PDF- lives at the start; only a file with junk in front needs a scan.
     size_t hdr = readBytes(0, n < 4096 ? n : 4096).find("%PDF-");
     if (hdr == std::string::npos) {
-        size_t hit = findForward(0, "%PDF-", 5);
+        // First 64 MB only: a PDF whose header is not there is not a PDF, and a
+        // ranged scan of a 4 GiB file at 64 KB per request takes minutes.
+        size_t hit = findForward(0, "%PDF-", 5, 64u << 20);
         if (hit != std::string::npos) hdr = hit;
     }
     if (hdr == std::string::npos) { error = "no %PDF header"; return false; }
@@ -484,7 +490,7 @@ bool Document::loadSource(std::unique_ptr<ByteSource> s) {
     // 'startxref' is in the last few hundred bytes; read the tail window only,
     // so opening a 300 MB file does not pull 300 MB.
     size_t tailLen = n < 65536 ? n : 65536;
-    size_t tailOff = n - tailLen;
+    uint64_t tailOff = n - tailLen;
     std::string tail = readBytes(tailOff, tailLen);
     size_t sx = tail.rfind("startxref");
     if (sx == std::string::npos) {
@@ -685,14 +691,14 @@ ObjP Document::objFromObjectStream(int stmNum, int wantNum) {
 // inside "1337 0 obj"; the last match wins because incremental updates append.
 int64_t Document::scanObjectOffset(int num) {
     const std::string pat = std::to_string(num);
-    const size_t n = fileSize();
+    const uint64_t n = fileSize();
     const size_t CH = 1 << 16;
     int64_t found = -1;
     std::string carry;
-    for (size_t off = 0; off < n; off += CH) {
+    for (uint64_t off = 0; off < n; off += CH) {
         // one chunk of overlap so a match straddling the boundary is not lost
         std::string chunk = carry + readBytes(off, CH);
-        size_t chunkBase = off - carry.size();
+        uint64_t chunkBase = off - carry.size();
         size_t p = 0;
         while ((p = chunk.find(pat, p)) != std::string::npos) {
             bool leftOk = (chunkBase + p) == 0
@@ -739,7 +745,7 @@ ObjP Document::parseObjectAt(int64_t off, bool* ok) {
             if (lenObj->t == O_REF) lenObj = obj(lenObj->ref);
             if (lenObj && (lenObj->t == O_INT || lenObj->t == O_REAL)) len = (long)lenObj->num;
         }
-        const size_t n = fileSize();
+        const uint64_t n = fileSize();
         bool valid = len >= 0 && (size_t)len <= n - startOff;
         if (valid) {
             // sanity: 'endstream' must follow the declared length (allow EOL)
@@ -857,12 +863,12 @@ void Document::reconstructXref() {
     objNumToStm.clear();
     // Chunked: this is the damaged-file path, and it may have to walk a file
     // far bigger than the window (or than we want resident).
-    const size_t n = fileSize();
+    const uint64_t n = fileSize();
     const size_t CH = 1 << 16;
     std::string carry;
-    for (size_t off = 0; off < n; off += CH) {
+    for (uint64_t off = 0; off < n; off += CH) {
         std::string chunk = carry + readBytes(off, CH);
-        const size_t chunkBase = off - carry.size();
+        const uint64_t chunkBase = off - carry.size();
         const size_t len = chunk.size();
         // leave a tail unexamined so a match straddling the boundary survives
         const size_t limit = len > 64 ? len - 64 : 0;
@@ -897,7 +903,7 @@ void Document::reconstructXref() {
     size_t hi = tail.rfind("trailer");
     if (hi != std::string::npos) t = n - tailLen + hi;
     else {
-        size_t hit = findForward(0, "trailer", 7);
+        size_t hit = findForward(0, "trailer", 7, 64u << 20);
         if (hit != std::string::npos) t = hit;
     }
     if (t != std::string::npos) {

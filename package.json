@@ -66,6 +66,7 @@
     "prepublishOnly": "npm run build:js && npm run test",
     "test:ranged": "node test/ranged.mjs",
     "test:ranged4g": "node test/ranged4g.mjs",
+    "test:bigfile": "node test/bigfile.mjs",
     "fixture:large": "python3 scripts/make_large_fixture.py"
   },
   "peerDependencies": {

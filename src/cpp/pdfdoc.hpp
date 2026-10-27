@@ -139,7 +139,10 @@ struct Document {
     uint64_t absOff(const uint8_t* p) const;
     /// First occurrence of `needle` at or after `from`, or std::string::npos.
     /// Streams past the file in chunks, so it works on a windowed source.
-    uint64_t findForward(uint64_t from, const char* needle, size_t nl);
+    /// `maxBytes` caps the scan (0 = whole file): a ranged scan is one
+    /// synchronous request per 64 KB, so an unbounded miss on a 4 GiB file is
+    /// 65 000 round trips, which reads as a hang rather than an error.
+    uint64_t findForward(uint64_t from, const char* needle, size_t nl, uint64_t maxBytes = 0);
     bool loadSource(std::unique_ptr<ByteSource> s);
 
     std::map<int, int> objNumToStm;        // object streams: num -> container obj num
