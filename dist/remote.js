@@ -273,6 +273,7 @@ export class PdfRemoteDocument {
     this._closed = false;
     this._textCache = new Map();
     this._linkCache = new Map();
+    this._annotCache = new Map();
     this._sizeCache = new Map();
     this._cache = new PageCache({
       enabled: options.pageCache !== false,
@@ -346,6 +347,7 @@ export class PdfRemoteDocument {
     this._assertOpen();
     this._textCache.set(index, res.text || []);
     this._linkCache.set(index, res.links || []);
+    if (res.annots) this._annotCache.set(index, res.annots);
 
     let imageData;
     if (typeof ImageData !== 'undefined') {
@@ -408,6 +410,12 @@ export class PdfRemoteDocument {
     return this._linkCache.get(index) || [];
   }
 
+  /** Cached annotations for a page — warmed by the render that drew it. */
+  getAnnots(index) {
+    this._assertOpen();
+    return this._annotCache.get(index) || [];
+  }
+
   async loadText(index) {
     this._assertOpen();
     if (this._textCache.has(index)) return this._textCache.get(index);
@@ -422,6 +430,14 @@ export class PdfRemoteDocument {
     const links = await this._client.call('links', { docId: this._id, page: index });
     this._linkCache.set(index, links || []);
     return this._linkCache.get(index);
+  }
+
+  async loadAnnots(index) {
+    this._assertOpen();
+    if (this._annotCache.has(index)) return this._annotCache.get(index);
+    const annots = await this._client.call('annots', { docId: this._id, page: index });
+    this._annotCache.set(index, annots || []);
+    return this._annotCache.get(index);
   }
 
   async getPageText(index, options) {
@@ -458,6 +474,7 @@ export class PdfRemoteDocument {
     this._closed = true;
     this._textCache.clear();
     this._linkCache.clear();
+    this._annotCache.clear();
     this._sizeCache.clear();
     this._cache.clear();
     // The last document closing takes the worker with it, so do not spend a

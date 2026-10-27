@@ -167,6 +167,7 @@ export class PdfDocument {
     this._sizeCache = new Map();
     this._textCache = new Map();
     this._linkCache = new Map();
+    this._annotCache = new Map();
     this._workerError = null;
   }
 
@@ -583,6 +584,25 @@ export class PdfDocument {
   /** Async form of `getLinks`. */
   async loadLinks(index) { return this.getLinks(index); }
 
+  /**
+   * Non-link annotations on a page (notes, markup, stamps, widgets):
+   * `{ sub, x0, y0, x1, y1, contents?, author?, subject?, name?, date?,
+   *    color?, popup? }`, page space (y up). The renderer paints each
+   * annotation's appearance stream; `contents` is the comment text, which only
+   * lives in the annotation object and would otherwise be invisible.
+   */
+  getAnnots(index) {
+    this._assertOpen();
+    if (this._annotCache.has(index)) return this._annotCache.get(index);
+    const json = this.Module._wpdf_page_annots_json(this._handle, index);
+    const annots = json ? JSON.parse(this.Module.UTF8ToString(json)) : [];
+    this._annotCache.set(index, annots);
+    return annots;
+  }
+
+  /** Async form of `getAnnots`, for code that must also work on a worker document. */
+  async loadAnnots(index) { return this.getAnnots(index); }
+
   /** Plain text for one page. */
   getPageText(index, options) {
     return itemsToText(this.getText(index), options);
@@ -669,6 +689,7 @@ export class PdfDocument {
     this._closed = true;
     this._textCache.clear();
     this._linkCache.clear();
+    this._annotCache.clear();
     this._sizeCache.clear();
     this._cache?.clear();
     this.Module._wpdf_close(this._handle);

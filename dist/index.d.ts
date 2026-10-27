@@ -49,6 +49,28 @@ export interface LinkAnnotation {
   page?: number;
 }
 
+/** A non-link annotation: a note, a markup mark, a stamp or a widget. */
+export interface Annot {
+  /** /Subtype without the slash: `Text`, `Highlight`, `Stamp`, `Widget`, ... */
+  sub: string;
+  /** /Rect in page space (y up, origin bottom-left). */
+  x0: number; y0: number; x1: number; y1: number;
+  /** /Contents — the comment text. Absent when the annotation carries none. */
+  contents?: string;
+  /** /T — the comment's author. */
+  author?: string;
+  /** /Subj — the subject line. */
+  subject?: string;
+  /** /Name — the icon name for notes and the stamp name for stamps. */
+  name?: string;
+  /** /M — the modification date, as written by the producer. */
+  date?: string;
+  /** /C as RGB, 0..1 per component. */
+  color?: [number, number, number];
+  /** The /Popup rectangle, when the annotation has an openable popup. */
+  popup?: [number, number, number, number];
+}
+
 export interface ModuleOptions extends WorkerOptions {
   /** Keep rendered page bitmaps in a byte-budgeted LRU. Default true. */
   pageCache?: boolean;
@@ -176,11 +198,16 @@ export declare class PdfDocument {
   /** Link annotations on a page (external URIs and internal page targets). */
   getLinks(index: number): LinkAnnotation[];
 
+  /** Notes, markup, stamps and widgets on a page — `getLinks` covers /Link. */
+  getAnnots(index: number): Annot[];
+
   getText(index: number): TextItem[];
   /** Async form of getText, so one call site works on both document kinds. */
   loadText(index: number): Promise<TextItem[]>;
   /** Async form of `getLinks`. */
   loadLinks(index: number): Promise<LinkAnnotation[]>;
+  /** Async form of `getAnnots`. */
+  loadAnnots(index: number): Promise<Annot[]>;
 
   /** Bytes the parser actually pulled (ranged sources) and the window size. */
   readonly sourceStats: {
@@ -258,6 +285,8 @@ export interface PdfRemoteDocument {
   getLinks(index: number): LinkAnnotation[];
   loadText(index: number): Promise<TextItem[]>;
   loadLinks(index: number): Promise<LinkAnnotation[]>;
+  getAnnots(index: number): Annot[];
+  loadAnnots(index: number): Promise<Annot[]>;
   getPageText(index: number, options?: { lineSeparator?: string }): Promise<string>;
   getAllText(options?: { lineSeparator?: string }): Promise<string[]>;
 
