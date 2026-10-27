@@ -8,6 +8,7 @@ examples/react/bundle.js
 
 # generated on demand by test/ranged.mjs (117 MB)
 test/fixtures/large-scan.pdf
+test/fixtures/huge-sparse.pdf
 
 # publish artefacts
 *.tgz

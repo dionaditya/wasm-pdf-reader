@@ -32,11 +32,14 @@ namespace pdf {
 
 struct ByteSource {
     virtual ~ByteSource() {}
-    virtual size_t size() const = 0;
+    /// File size in bytes. 64-bit on purpose: wasm32's `size_t` is 32 bits and
+    /// a file of exactly 4 GiB would truncate to 0 (see the ranged path notes in
+    /// pdfdoc.cpp). The *cap* below stays narrow — it is a window read.
+    virtual uint64_t size() const = 0;
 
     /// Copy up to `cap` bytes starting at `off` into `dst`.
     /// Returns the number of bytes copied; 0 means the read failed.
-    virtual size_t fetch(size_t off, uint8_t* dst, size_t cap) = 0;
+    virtual size_t fetch(uint64_t off, uint8_t* dst, size_t cap) = 0;
 
     /// Whole file resident in one contiguous buffer? Then the Document uses it
     /// directly and never slides a window (the pre-M9.2 path).
@@ -56,12 +59,12 @@ struct MemorySource : ByteSource {
     MemorySource() {}
     explicit MemorySource(std::string bytes) : buf(std::move(bytes)) {}
 
-    size_t size() const override { return buf.size(); }
+    uint64_t size() const override { return (uint64_t)buf.size(); }
     const uint8_t* direct() const override { return (const uint8_t*)buf.data(); }
 
-    size_t fetch(size_t off, uint8_t* dst, size_t cap) override {
+    size_t fetch(uint64_t off, uint8_t* dst, size_t cap) override {
         if (off >= buf.size()) return 0;
-        size_t n = std::min(cap, buf.size() - off);
+        size_t n = std::min(cap, (size_t)(buf.size() - (size_t)off));
         std::memcpy(dst, buf.data() + off, n);
         fetched += n;
         fetches++;
@@ -72,19 +75,19 @@ struct MemorySource : ByteSource {
 /// Bytes pulled from the host through a synchronous callback.
 /// `fn(off, dst, cap, ctx)` returns the number of bytes written into `dst`.
 struct CallbackSource : ByteSource {
-    size_t total = 0;
-    size_t (*fn)(size_t off, uint8_t* dst, size_t cap, void* ctx) = nullptr;
+    uint64_t total = 0;
+    size_t (*fn)(uint64_t off, uint8_t* dst, size_t cap, void* ctx) = nullptr;
     void* ctx = nullptr;
 
     CallbackSource() {}
-    CallbackSource(size_t n, size_t (*f)(size_t, uint8_t*, size_t, void*), void* c)
+    CallbackSource(uint64_t n, size_t (*f)(uint64_t, uint8_t*, size_t, void*), void* c)
         : total(n), fn(f), ctx(c) {}
 
-    size_t size() const override { return total; }
+    uint64_t size() const override { return total; }
 
-    size_t fetch(size_t off, uint8_t* dst, size_t cap) override {
+    size_t fetch(uint64_t off, uint8_t* dst, size_t cap) override {
         if (!fn || off >= total) return 0;
-        size_t want = std::min(cap, total - off);
+        size_t want = (size_t)std::min<uint64_t>(cap, total - off);
         size_t got = fn(off, dst, want, ctx);
         if (got > want) got = want;
         fetched += got;

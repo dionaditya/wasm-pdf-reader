@@ -165,9 +165,14 @@ WPDF_EXPORT void* wpdf_open_pw(const uint8_t* data, int len, const char* pw, int
 // Synchronous by design: the parser is a synchronous lexer. In practice this
 // only runs inside a worker (M9.1), where a blocking read cannot freeze the tab.
 #ifdef __EMSCRIPTEN__
-EM_JS(int, wpdf_js_range_fetch, (int offset, int length, unsigned char* dst, int cap), {
+// The offset arrives as two i32 halves rather than one i64 parameter: an i64
+// parameter would force BigInt on every JS read, while `hi * 2**32 + lo` is a
+// single exact Number (safe to 2^53). wasm32's `size_t` cannot carry a file
+// offset past 4 GiB, so this is the only 64-bit crossing on the read path.
+EM_JS(int, wpdf_js_range_fetch, (int offHi, unsigned int offLo, int length, unsigned char* dst, int cap), {
   const f = (typeof globalThis !== 'undefined') ? globalThis.__wpdfRangeFetch : null;
   if (typeof f !== 'function') return -1;
+  const offset = offHi * 4294967296 + (offLo >>> 0);
   let bytes;
   try { bytes = f(offset, length); } catch (e) { return -2; }
   if (!bytes || !bytes.length) return 0;
@@ -176,25 +181,37 @@ EM_JS(int, wpdf_js_range_fetch, (int offset, int length, unsigned char* dst, int
   return n;
 });
 #else
-static int wpdf_js_range_fetch(int, int, unsigned char*, int) { return -1; }
+static int wpdf_js_range_fetch(int, unsigned int, int, unsigned char*, int) { return -1; }
 #endif
 
-static size_t rangeFetchThunk(size_t off, uint8_t* dst, size_t cap, void* ctx) {
+static size_t rangeFetchThunk(uint64_t off, uint8_t* dst, size_t cap, void* ctx) {
     (void)ctx;
     if (cap > 0x7fffffffu) cap = 0x7fffffffu;
-    int got = wpdf_js_range_fetch((int)off, (int)cap, dst, (int)cap);
+    int got = wpdf_js_range_fetch((int)(off >> 32), (unsigned)(off & 0xffffffffu),
+                                  (int)cap, dst, (int)cap);
     return got > 0 ? (size_t)got : 0;
 }
 
 // Parse a PDF of `total` bytes that has not been loaded into wasm.
+// Largest file the ranged reader accepts. Offsets cross to JS as two 32-bit
+// halves, so 2^32 is representable exactly; anything above it used to wrap to
+// size 0 (`(size_t)total`) and surface as "empty document".
+static constexpr double kMaxRangedBytes = 4294967296.0;
+
 WPDF_EXPORT void* wpdf_open_stream(double total, const char* pw, int pwLen) {
     if (!(total > 0)) {
         gLastError = "empty document";
         return nullptr;
     }
+    if (total > kMaxRangedBytes) {
+        gLastError = "file is larger than 4 GiB, which is the ranged reader's limit "
+                     "(it never copies the file, but a 32-bit window address space cannot "
+                     "index past 2^32)";
+        return nullptr;
+    }
     DocHandle* h = new DocHandle();
     if (pw && pwLen > 0) h->doc.password.assign(pw, (size_t)pwLen);
-    auto cs = std::make_unique<pdf::CallbackSource>((size_t)total, rangeFetchThunk, nullptr);
+    auto cs = std::make_unique<pdf::CallbackSource>((uint64_t)total, rangeFetchThunk, nullptr);
     if (!h->doc.loadSource(std::move(cs))) {
         gLastError = h->doc.error.empty() ? "cannot parse PDF" : h->doc.error;
         delete h;

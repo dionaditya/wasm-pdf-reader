@@ -38,6 +38,7 @@ node examples/build-react.mjs
 node test/unit.mjs              # 76 checks, no browser, ~seconds
 node test/e2e.mjs              # 20 steps in headless Chrome (see §3)
 node test/ranged.mjs           # 10 steps: 117 MB fixture, fetch + cache budgets
+node test/ranged4g.mjs         # 6 steps: sparse ~4 GiB fixture, offsets past 2^32, 4 GiB refusal
 node --expose-gc test/memory.mjs
 node test/pages.mjs             # builds _site and serves it under /wasm-pdf-reader/
 scripts/verify_encryption.sh    # needs qpdf; diffs derived keys per revision

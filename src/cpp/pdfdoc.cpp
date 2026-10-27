@@ -60,18 +60,18 @@ struct Document::Lex {
     const char* base = nullptr;   // file offset `baseOff` maps to base[0]
     const char* p = nullptr;      // base + (at - baseOff)
     const char* end = nullptr;    // base + resident bytes
-    size_t baseOff = 0;
-    size_t at = 0;                // absolute file offset of the next byte
+    uint64_t baseOff = 0;
+    uint64_t at = 0;              // absolute file offset of the next byte
     bool memory = false;          // lexing a std::string, never the file
     const char* memEnd = nullptr; // memory mode: end of the borrowed buffer
 
-    Lex(Document* d, size_t off) : doc(d), at(off) { resident(0); }
+    Lex(Document* d, uint64_t off) : doc(d), at(off) { resident(0); }
     /// Lex a buffer that is already in memory (an object stream's decoded
     /// bytes, a content stream). No window, no source access.
     Lex(Document* d, const char* b, const char* e)
         : doc(d), base(b), p(b), end(e), baseOff(0), at(0), memory(true), memEnd(e) {}
 
-    size_t offset() const { return at; }
+    uint64_t offset() const { return at; }
 
     /// Ensure `pad` bytes at `at` are contiguous. Returns false at EOF or when
     /// the source cannot supply them.
@@ -89,7 +89,7 @@ struct Document::Lex {
     /// Advance by n bytes (they must already be resident).
     void adv(size_t n = 1) { at += n; if (p) p += n; }
 
-    void seek(size_t off) {
+    void seek(uint64_t off) {
         at = off;
         if (memory) { p = base + at; end = memEnd; return; }
         p = nullptr;
@@ -342,13 +342,13 @@ const uint8_t* Document::residentBase() const {
     const uint8_t* d = directBase();
     return (d && !windowForced) ? d : winBase();
 }
-size_t Document::residentOff() const { return (directBase() && !windowForced) ? 0 : winOff; }
+uint64_t Document::residentOff() const { return (directBase() && !windowForced) ? 0 : winOff; }
 size_t Document::residentSize() const { return (directBase() && !windowForced) ? fileSize() : win.size(); }
 
 static const size_t kBaseChunk = 16u << 10;     // random access: 16 KB
 static const size_t kMaxWindow = 1u << 20;      // sequential: up to 1 MB
 
-bool Document::cover(size_t off, size_t need) {
+bool Document::cover(uint64_t off, size_t need) {
     if (!src) return false;
     const size_t n = fileSize();
     if (off > n) return false;
@@ -378,14 +378,14 @@ bool Document::cover(size_t off, size_t need) {
     return need <= got;
 }
 
-int Document::byteAt(size_t off) {
+int Document::byteAt(uint64_t off) {
     const uint8_t* d = directBase();
     if (d && !windowForced) return off < fileSize() ? d[off] : -1;
     if (!cover(off, 1)) return -1;
     return win[off - winOff];
 }
 
-std::string Document::readBytes(size_t off, size_t len) {
+std::string Document::readBytes(uint64_t off, size_t len) {
     std::string out;
     const size_t n = fileSize();
     if (off >= n || !len) return out;
@@ -407,7 +407,7 @@ std::string Document::readBytes(size_t off, size_t len) {
     return out;
 }
 
-size_t Document::findForward(size_t from, const char* needle, size_t nl) {
+uint64_t Document::findForward(uint64_t from, const char* needle, size_t nl) {
     const size_t n = fileSize();
     const size_t CH = 1 << 16;
     std::string carry;
@@ -424,8 +424,8 @@ size_t Document::findForward(size_t from, const char* needle, size_t nl) {
     return std::string::npos;
 }
 
-long Document::absOff(const uint8_t* p) const {
-    return (long)(residentOff() + (size_t)(p - residentBase()));
+uint64_t Document::absOff(const uint8_t* p) const {
+    return residentOff() + (uint64_t)(p - residentBase());
 }
 
 // ─── load ───────────────────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ bool Document::loadSource(std::unique_ptr<ByteSource> s) {
     }
     if (hdr == std::string::npos) { error = "no %PDF header"; return false; }
 
-    long startxref = -1;
+    int64_t startxref = -1;
     // 'startxref' is in the last few hundred bytes; read the tail window only,
     // so opening a 300 MB file does not pull 300 MB.
     size_t tailLen = n < 65536 ? n : 65536;
@@ -499,10 +499,16 @@ bool Document::loadSource(std::unique_ptr<ByteSource> s) {
     if (sx != std::string::npos) {
         size_t q = sx + 9;
         while (q < tail.size() && isWS((unsigned char)tail[q])) ++q;
-        startxref = atol(tail.c_str() + q);
+        // atol() is 32-bit on wasm32 and wraps above 2 GiB, which is exactly
+        // where a 4 GB file's trailer lives. Parse it as 64-bit by hand.
+        startxref = 0;
+        while (q < tail.size() && tail[q] >= '0' && tail[q] <= '9') {
+            startxref = startxref * 10 + (tail[q] - '0');
+            ++q;
+        }
     }
     bool okXref = false;
-    if (startxref > 0 && startxref < (long)n) okXref = parseXref(startxref, 0);
+    if (startxref > 0 && (uint64_t)startxref < n) okXref = parseXref(startxref, 0);
     if (!okXref || !trailer || !trailer->get("Root")) {
         warn("xref damaged, reconstructing by scanning");
         reconstructXref();
@@ -588,7 +594,7 @@ ObjP Document::obj(int num) {
     auto it = cache.find(num);
     if (it != cache.end()) return it->second;
     cache[num] = mkNull();  // recursion guard
-    long off = -1;
+    int64_t off = -1;
     auto xit = xref.find(num);
     if (xit != xref.end()) off = xit->second;
     if (xrefFree.count(num)) { cache[num] = mkNull(); return cache[num]; }  // deleted
@@ -605,7 +611,7 @@ ObjP Document::obj(int num) {
     }
     if (!res || res->t == O_NULL) {
         // last resort: scan for "<num> <gen> obj" in the raw bytes
-        long p = scanObjectOffset(num);
+        int64_t p = scanObjectOffset(num);
         if (p >= 0) {
             bool ok = false;
             ObjP scanned = parseObjectAt(p, &ok);
@@ -677,11 +683,11 @@ ObjP Document::objFromObjectStream(int stmNum, int wantNum) {
 // Last resort for objects the xref does not cover: find "<num> <gen> obj" in
 // the raw bytes. The number must start a token, otherwise object 37 matches
 // inside "1337 0 obj"; the last match wins because incremental updates append.
-long Document::scanObjectOffset(int num) {
+int64_t Document::scanObjectOffset(int num) {
     const std::string pat = std::to_string(num);
     const size_t n = fileSize();
     const size_t CH = 1 << 16;
-    long found = -1;
+    int64_t found = -1;
     std::string carry;
     for (size_t off = 0; off < n; off += CH) {
         // one chunk of overlap so a match straddling the boundary is not lost
@@ -700,7 +706,7 @@ long Document::scanObjectOffset(int num) {
                     while (q < chunk.size() && isWS((unsigned char)chunk[q])) ++q;
                     if (q + 3 <= chunk.size() && chunk.compare(q, 3, "obj") == 0 &&
                         (q + 3 >= chunk.size() || !isRegular((unsigned char)chunk[q + 3])))
-                        found = (long)(chunkBase + p);   // last match wins
+                        found = (int64_t)(chunkBase + p);   // last match wins
                 }
             }
             p += pat.size();
@@ -710,10 +716,10 @@ long Document::scanObjectOffset(int num) {
     return found;
 }
 
-ObjP Document::parseObjectAt(long off, bool* ok) {
+ObjP Document::parseObjectAt(int64_t off, bool* ok) {
     *ok = false;
     if (off < 0 || (size_t)off >= fileSize()) return nullptr;
-    Lex lex(this, (size_t)off);
+    Lex lex(this, (uint64_t)off);
     double n, g; bool ia, ib;
     if (!lex.readNumber(n, ia) || !lex.readNumber(g, ib)) return nullptr;
     if (!lex.eatWord("obj")) return nullptr;
@@ -726,7 +732,7 @@ ObjP Document::parseObjectAt(long off, bool* ok) {
         // stream data starts after CRLF or LF (not CR alone)
         if (lex.resident(1) && *lex.p == '\r') lex.adv();
         if (lex.resident(1) && *lex.p == '\n') lex.adv();
-        size_t startOff = lex.offset();
+        uint64_t startOff = lex.offset();
         long len = -1;
         ObjP lenObj = o->get("Length");
         if (lenObj) {
@@ -754,9 +760,9 @@ ObjP Document::parseObjectAt(long off, bool* ok) {
     return o;
 }
 
-bool Document::parseXref(long off, int depth) {
-    if (depth > 40 || off <= 0 || (size_t)off >= fileSize()) return false;
-    Lex lex(this, (size_t)off);
+bool Document::parseXref(int64_t off, int depth) {
+    if (depth > 40 || off <= 0 || (uint64_t)off >= fileSize()) return false;
+    Lex lex(this, (uint64_t)off);
     lex.skipWS();
     bool gotTrailer = false;
     ObjP trailerDict;
@@ -776,7 +782,7 @@ bool Document::parseXref(long off, int depth) {
                 char ty = *lex.p;
                 lex.adv();
                 int num = (int)start + i;
-                if (ty == 'n' && !xref.count(num)) xref[num] = (long)o;
+                if (ty == 'n' && !xref.count(num)) xref[num] = (int64_t)o;
             }
         }
         lex.skipWS();
@@ -840,7 +846,7 @@ bool Document::parseXref(long off, int depth) {
     ObjP prev = trailerDict ? trailerDict->get("Prev") : nullptr;
     if (prev) {
         ObjP pv = resolve(prev);
-        long poff = (long)objNum(pv, -1);
+        int64_t poff = (int64_t)objNum(pv, -1);
         if (poff > 0) parseXref(poff, depth + 1);
     }
     return trailer != nullptr;
@@ -878,7 +884,7 @@ void Document::reconstructXref() {
             if (r + 3 <= len && chunk.compare(r, 3, "obj") == 0 &&
                 (r + 3 >= len || !isRegular((unsigned char)chunk[r + 3]))) {
                 int num = atoi(chunk.substr(numStart, i - numStart).c_str());
-                xref[num] = (long)(chunkBase + numStart);   // newer definitions win
+                xref[num] = (int64_t)(chunkBase + numStart);   // newer definitions win
                 i = r + 3;
             }
         }

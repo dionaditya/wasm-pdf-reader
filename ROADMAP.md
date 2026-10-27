@@ -347,6 +347,16 @@ Two things this cost that are worth remembering:
   random jumps *are*, and it is also why opening a 240-page ranged document
   takes ~3 s over HTTP (260 sync XHRs). Batching the page-tree read is the
   obvious next optimisation; it is not a correctness issue.
+- **4 GiB needed a type change, not a flag.** `MAXIMUM_MEMORY` cannot help — a
+  wasm32 module's whole address space is 4 GiB and the file shares it with the
+  render bitmap — so the ceiling was the offsets: `size_t` in `pdfsource.hpp`
+  (a 4 GiB file truncates to 0), `long` xref entries, `(int)off` in the
+  `wpdf_js_range_fetch` bridge, and `atol()` on the `startxref` value. All are
+  64-bit now (`uint64_t`/`int64_t`), the bridge passes `hi`/`lo` i32 halves so JS
+  still gets a plain Number, and `wpdf_open_stream` refuses above 2^32 by name.
+  `test/ranged4g.mjs` on a sparse 3.999 GiB fixture (objects in the last
+  kilobyte): **80 KB fetched in 4 requests, 16 MB heap**, xref and page resolved;
+  a >4 GiB size is refused instead of surfacing as "empty document".
 
 **M9.3 — Display list + page cache with a budget (1 week) — *page cache done,
 display list open*.**

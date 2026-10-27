@@ -241,6 +241,18 @@ with a global symbol dictionary, drawn at 1:1:
   A file above the copy budget is opened through worker + ranged loading
   automatically, even if `{ worker: true }` was not passed, because that is the
   only path that can work.
+- **A 4 GB file is an offset problem, not a heap one — and the offsets are
+  64-bit now.** wasm32's entire address space is 4 GiB, so no heap flag can hold
+  the file; ranged loading never needs to. Every offset that used to be 32-bit is
+  widened: `ByteSource::size`/`fetch`, the xref table, the lexer's position, and
+  `startxref` (which was parsed with `atol()` and wrapped above 2 GiB, reporting a
+  2.1 GB file as damaged). The offset crosses to JS as two i32 halves —
+  `hi * 2^32 + lo`, still one exact Number — rather than as an i64 parameter that
+  would force BigInt on every read. Measured in Chromium on a **sparse 3.999 GiB**
+  fixture whose objects sit in the last kilobyte: 1 page, **80 KB fetched in 4
+  range requests**, **16 MB heap**, 226 ms. Above 4 GiB the open is refused by
+  name instead of truncating to size 0: `file is larger than 4 GiB, which is the
+  ranged reader's limit`. `npm run test:ranged4g` holds it down.
 - **One page, 40 MP.** A page is rendered whole, so `scale` is bounded by pixel
   count: 40 MP is the ceiling (a 10000×10000 px page is refused). Failures say
   which limit they hit:
@@ -603,6 +615,7 @@ npm test              # core: parse, raster, text, search, links, annotations, C
 npm run test:e2e      # headless Chrome: 20 steps — both demos, worker mode, rotation, cache, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:ranged   # 117 MB fixture: ranged open, fetch budget, cache budget (10 steps)
+npm run test:ranged4g # sparse 4 GiB fixture: offsets past 2^32, fetch budget, the 4 GiB refusal (6 steps)
 npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus
 scripts/verify_encryption.sh   # keys vs qpdf for every revision (needs qpdf)
 npm run test:visual   # rewrite the pixel baseline after an intended change

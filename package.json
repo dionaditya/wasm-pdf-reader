@@ -1,7 +1,7 @@
 {
   "name": "@dionaditya/wasm-pdf-reader",
   "version": "0.3.0",
-  "description": "A PDF parser, rasterizer and text extractor in WebAssembly — plain-JS viewer plus React components, no server and no CDN.",
+  "description": "A PDF parser, rasterizer and text extractor in WebAssembly \u2014 plain-JS viewer plus React components, no server and no CDN.",
   "keywords": [
     "pdf",
     "pdf-viewer",
@@ -65,6 +65,7 @@
     "test:all": "npm test && npm run test:e2e && npm run test:pages && npm run test:ranged",
     "prepublishOnly": "npm run build:js && npm run test",
     "test:ranged": "node test/ranged.mjs",
+    "test:ranged4g": "node test/ranged4g.mjs",
     "fixture:large": "python3 scripts/make_large_fixture.py"
   },
   "peerDependencies": {

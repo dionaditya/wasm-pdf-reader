@@ -64,7 +64,10 @@ export function installRangeFetcher(spec) {
   let whole = null;
 
   const read = (off, len) => {
-    const start = Math.max(0, off | 0);
+    // `off` is recombined from the wasm bridge's hi/lo halves in wpdf_api.cpp,
+    // so it is a plain Number and stays exact up to 2^53 — `| 0` would wrap it
+    // to a negative 32-bit int past 2 GiB.
+    const start = Math.max(0, Math.floor(Number(off) || 0));
     const end = Math.min(size, start + Math.max(0, len | 0));
     if (end <= start) return new Uint8Array(0);
     if (whole) return whole.subarray(start, end);
