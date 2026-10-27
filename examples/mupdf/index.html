@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuPDF book — rendered by wasm-pdf-reader</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #0b0f19; color: #e8ecf4; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+  header { padding: 10px 14px; background: #111827; border-bottom: 1px solid #1f2937; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  header b { color: #7dd3fc; font-weight: 600; }
+  header .meta { color: #94a3b8; font-size: 12px; }
+  button { font: inherit; font-size: 13px; color: #e5e7eb; background: #1f2937; border: 1px solid #334155; border-radius: 6px; padding: 5px 11px; cursor: pointer; }
+  button:hover { background: #273449; }
+  button:disabled { opacity: .45; cursor: default; }
+  #pageNo { width: 58px; text-align: center; font: inherit; font-size: 13px; color: #e5e7eb; background: #0b1220; border: 1px solid #334155; border-radius: 6px; padding: 4px 6px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #view { flex: 1; overflow: auto; padding: 20px; display: flex; justify-content: center; align-items: flex-start; }
+  #stage { position: relative; }
+  #stage canvas { background: #fff; box-shadow: 0 14px 44px rgba(0,0,0,.6); display: block; }
+  .mark { position: absolute; border: 2px solid #f59e0b; background: rgba(245,158,11,.18); border-radius: 3px; cursor: pointer; }
+  .mark:hover { background: rgba(245,158,11,.34); }
+  .bubble { position: absolute; max-width: 320px; background: #111827; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; color: #e5e7eb; box-shadow: 0 12px 30px rgba(0,0,0,.6); z-index: 5; }
+  .bubble .who { color: #7dd3fc; font-size: 11.5px; margin-bottom: 4px; }
+  .bubble .close { color: #94a3b8; cursor: pointer; float: right; margin-left: 10px; }
+  aside { width: 330px; background: #0f172a; border-left: 1px solid #1f2937; overflow: auto; padding: 14px; font-size: 12.5px; }
+  aside h2 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; margin: 0 0 8px; }
+  .annot { padding: 7px 8px; border: 1px solid #1f2937; border-radius: 6px; margin-bottom: 6px; cursor: pointer; background: #111827; }
+  .annot:hover { border-color: #334155; }
+  .annot .p { color: #7dd3fc; font-size: 11px; }
+  .annot .c { color: #e5e7eb; }
+  .annot .s { color: #94a3b8; font-size: 11px; }
+  #stats { padding: 6px 14px; font-size: 12px; color: #94a3b8; border-top: 1px solid #1f2937; }
+  #stats b { color: #6ee7b7; }
+</style>
+</head>
+<body>
+<header>
+  <b>wasm-pdf-reader</b>
+  <span class="meta">MuPDF book — cover and comments</span>
+  <button id="prev">‹</button>
+  <input id="pageNo" value="1">
+  <span class="meta" id="of">/ …</span>
+  <button id="next">›</button>
+  <span style="flex:1"></span>
+  <button id="zoomOut">−</button>
+  <button id="zoomIn">+</button>
+  <button id="fit">fit</button>
+  <a class="meta" style="color:#93c5fd" href="/_samples/mupdf-book.pdf" download>download pdf</a>
+</header>
+
+<main>
+  <div id="view"><div id="stage"><canvas id="c" width="300" height="150"></canvas></div></div>
+  <aside>
+    <h2>Annotations</h2>
+    <div id="annots"><span class="meta">scanning…</span></div>
+  </aside>
+</main>
+<div id="stats">loading…</div>
+
+<script type="module">
+import { PdfDocument } from '/dist/index.js';
+
+const canvas = document.getElementById('c');
+const stage = document.getElementById('stage');
+const stats = document.getElementById('stats');
+const annotsBox = document.getElementById('annots');
+const pageInput = document.getElementById('pageNo');
+const of = document.getElementById('of');
+
+let doc = null;
+let page = 0;
+let scale = 1.5;
+let fitMode = true;
+let openMs = 0;
+let annotsByPage = [];
+
+const set = (html) => { stats.innerHTML = html; };
+
+async function boot() {
+  const t0 = performance.now();
+  const res = await fetch('/_samples/mupdf-book.pdf');
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  doc = await PdfDocument.open(bytes, {});
+  openMs = Math.round(performance.now() - t0);
+  of.textContent = `/ ${doc.pageCount}`;
+  pageInput.max = String(doc.pageCount);
+  await render();
+  scanAnnots();
+}
+
+function fitScale() {
+  const avail = document.getElementById('view').clientWidth - 40;
+  const size = doc.getPageSize(page);
+  return Math.min(3, Math.max(0.3, avail / size.width));
+}
+
+async function render() {
+  if (!doc) return;
+  if (fitMode) scale = fitScale();
+  const t0 = performance.now();
+  const out = await doc.render(page, { scale, dpr: Math.min(window.devicePixelRatio || 1, 2) });
+  canvas.width = out.width;
+  canvas.height = out.height;
+  canvas.style.width = `${Math.round(out.width / Math.min(window.devicePixelRatio || 1, 2))}px`;
+  canvas.style.height = `${Math.round(out.height / Math.min(window.devicePixelRatio || 1, 2))}px`;
+  canvas.getContext('2d').putImageData(out.imageData, 0, 0);
+  const ms = Math.round(performance.now() - t0);
+  pageInput.value = String(page + 1);
+  // clear old marks/bubbles, then draw this page's
+  stage.querySelectorAll('.mark, .bubble').forEach((n) => n.remove());
+  drawMarks();
+  const size = doc.getPageSize(page);
+  set(`page <b>${page + 1}</b>/${doc.pageCount} · ${size.width.toFixed(0)}×${size.height.toFixed(0)} pt · ` +
+      `render <b>${ms} ms</b> · open <b>${openMs} ms</b> · scale ${scale.toFixed(2)}` +
+      (doc.sourceStats ? ` · fetched ${(doc.sourceStats.fetched / 1024).toFixed(0)} KB` : ''));
+  window.__ready = true;
+}
+
+function drawMarks() {
+  const list = annotsByPage[page] || [];
+  const size = doc.getPageSize(page);
+  const cssW = parseFloat(canvas.style.width) || canvas.width;
+  const k = cssW / size.width;
+  for (const a of list) {
+    const el = document.createElement('div');
+    el.className = 'mark';
+    el.style.left = `${a.x0 * k}px`;
+    el.style.top = `${(size.height - a.y1) * k}px`;
+    el.style.width = `${Math.max(12, (a.x1 - a.x0) * k)}px`;
+    el.style.height = `${Math.max(12, (a.y1 - a.y0) * k)}px`;
+    el.title = a.contents || a.sub;
+    el.onclick = (ev) => { ev.stopPropagation(); showBubble(a, el); };
+    stage.appendChild(el);
+  }
+}
+
+function showBubble(a, anchor) {
+  stage.querySelectorAll('.bubble').forEach((n) => n.remove());
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.innerHTML = `<span class="close">×</span><div class="who">${a.author || a.sub}${a.date ? ' · ' + a.date : ''}</div>${(a.contents || '(no text)').replace(/</g, '&lt;')}`;
+  b.style.left = `${Math.min(anchor.offsetLeft + anchor.offsetWidth + 8, stage.clientWidth - 330)}px`;
+  b.style.top = `${Math.max(0, anchor.offsetTop - 6)}px`;
+  b.querySelector('.close').onclick = () => b.remove();
+  stage.appendChild(b);
+}
+
+async function scanAnnots() {
+  annotsByPage = [];
+  const found = [];
+  for (let i = 0; i < doc.pageCount; i++) {
+    const list = await doc.loadAnnots(i);
+    annotsByPage[i] = list || [];
+    for (const a of annotsByPage[i]) found.push({ ...a, page: i });
+  }
+  if (!found.length) { annotsBox.innerHTML = '<span class="meta">no annotations in this document</span>'; return; }
+  annotsBox.replaceChildren(...found.map((a) => {
+    const el = document.createElement('div');
+    el.className = 'annot';
+    el.innerHTML = `<div class="p">page ${a.page + 1} · ${a.sub}</div>` +
+      `<div class="c">${(a.contents || '(no text)').replace(/</g, '&lt;')}</div>` +
+      `<div class="s">${[a.author, a.subject, a.name].filter(Boolean).join(' · ') || ''}</div>`;
+    el.onclick = async () => { page = a.page; await render(); };
+    return el;
+  }));
+  window.__annotCount = found.length;
+  window.__annotText = found.map((a) => a.contents || '').join(' | ');
+  drawMarks();
+}
+
+const go = async (n) => { page = Math.max(0, Math.min(doc.pageCount - 1, n)); await render(); };
+document.getElementById('prev').onclick = () => go(page - 1);
+document.getElementById('next').onclick = () => go(page + 1);
+pageInput.onchange = () => go(Number(pageInput.value) - 1);
+document.getElementById('zoomIn').onclick = async () => { fitMode = false; scale = Math.min(6, scale * 1.25); await render(); };
+document.getElementById('zoomOut').onclick = async () => { fitMode = false; scale = Math.max(0.2, scale / 1.25); await render(); };
+document.getElementById('fit').onclick = async () => { fitMode = true; await render(); };
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === 'PageDown') go(page + 1);
+  if (e.key === 'ArrowLeft' || e.key === 'PageUp') go(page - 1);
+  if (e.key === 'Escape') stage.querySelectorAll('.bubble').forEach((n) => n.remove());
+});
+window.addEventListener('resize', () => { if (fitMode) render(); });
+
+boot().catch((e) => set(`<span style="color:#f87171">failed: ${e.message}</span>`));
+</script>
+</body>
+</html>
