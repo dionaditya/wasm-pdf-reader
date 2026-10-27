@@ -171,13 +171,14 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 | `pdfraster.cpp` (3.1k lines) | The content-stream interpreter and the rasterizer: graphics state, paths, fills/strokes, clips, dashes, text (`showText`), images, form XObjects, tiling patterns, shadings (axial/radial + mesh 4/5), blend modes, transparency groups, annotation painting, OCG visibility. Most "it renders wrong" bugs live here. |
 | `wpdf_api.cpp` | The only wasm-aware code: the C ABI (`_wpdf_*`) that `src/js/document.js` calls, the reusable RGBA bitmap, JSON serialisation of text/links/form/outline/warnings, error strings. Add an export here when JS needs new data. |
 | `pdfcrypto.hpp` (18 KB, header-only) | MD5, SHA-256/384/512, RC4, AES-CBC. The R5/R6 key derivation (Algorithm 2.B) is here — every printable-ASCII boundary is tested by `test/enc_probe.cpp`. |
-| `pdfannots.cpp` | Link annotations (`/URI`, `/GoTo`, direct and named destinations) and appearance synthesis for markup (`/QuadPoints` + `/C`) and `/Text` notes that ship no `/AP`. |
+| `pdfannots.cpp` | Link annotations (`/URI`, `/GoTo`, direct and named destinations), the non-link annotation list (`Document::annots()` → `/Contents`, `/T`, `/C`, popup rect; links and popups excluded, hidden ones skipped) and appearance synthesis for markup (`/QuadPoints` + `/C`) and `/Text` notes that ship no `/AP`. |
 | `cfffont.cpp` + `cfffont.hpp` | CFF/CID-CFF parsing and the Type2 charstring interpreter, including CID→GID via charset and `hmtx` advances. |
 | `cff-parser.cc` | Vendored nanopdf CFF table parser (Apache-2.0). Attribution in `THIRD-PARTY.md`; do not "clean it up". |
 | `cmap.cpp` + `cmap.hpp` | Predefined Adobe CMaps (lookup into the packed blob) **and** embedded CMap streams: `begincodespacerange`, `begincidrange`, `begincidchar`, `usecmap`, mixed 1/2-byte codespaces. |
 | `iccp.cpp` + `iccp.hpp` | ICC parsing: matrix/TRC profiles and A2B0 LUTs. Currently wired into **images only**; fills still use `cmykToRgb()`. |
 | `jbig2native.cpp` + `.hpp` | The wasm2c bridge for PDFium's JBIG2/fax decoder: `wasm_rt_init`, `__wasm_call_ctors`, trap handler via `longjmp`, 64 MB pre-grow, re-read `data` after growth. |
-| `jpx-decoder.cc` (65 KB) | Vendored nanopdf JPEG 2000 decoder. Broken for most encoders — see ROADMAP M6. |
+| `openjpeg/` | Vendored OpenJPEG 2.5.4 (BSD-2), the JPEG 2000 decoder. Sources are unmodified; `opj_config.h`/`opj_config_private.h` are hand-written because CMake is not in the build. Compiled with `emcc` as C99 — `em++` would treat `.c` as C++ and fail. |
+| `jpxopenjpeg.cpp` + `.hpp` | First-party bridge into OpenJPEG: memory stream, raw codestream or JP2 container, output normalised to interleaved 8-bit (`ncomp` bytes per pixel). |
 | `stb_image.h`, `stb_truetype.h` | Vendored stb (MIT/public domain). `pdfdoc.cpp` defines `STB_IMAGE_IMPLEMENTATION` with JPEG only. |
 | `jbig2gen/` | Generated + vendored: `jbig2.c` (wasm2c output, **never edit**), `wasm-rt*.c/h`, `simde/` (SIMD shims the generated code needs). Regeneration instructions are in `jbig2native.cpp`. |
 | `cmaps_data.cpp` | Generated: 878,855 bytes of packed Adobe CMap data (BSD-3). Built by `scripts/build-cmaps.py`. |

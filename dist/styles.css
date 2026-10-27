@@ -297,6 +297,58 @@
   border-radius: 2px;
   mix-blend-mode: multiply;
 }
+
+/* Annotation marks: the page bitmap already shows the note icon or the stamp, so
+   the mark itself is only a hit target — a hover ring says it can be opened. */
+.wpdf-annot {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  outline: none;
+  pointer-events: auto;
+}
+.wpdf-annot:hover,
+.wpdf-annot:focus-visible,
+.wpdf-annot[aria-expanded="true"] {
+  background: var(--wpdf-link-hover, rgba(30, 120, 255, 0.14));
+  box-shadow: 0 0 0 1px var(--wpdf-link-ring, rgba(30, 120, 255, 0.45));
+}
+
+/* The comment bubble. It lives outside the turning layer so its text stays
+   upright when the page is rotated, and it is clamped to the page box. */
+.wpdf-annot__popup {
+  position: absolute;
+  z-index: 5;
+  max-width: min(320px, 92%);
+  padding: 8px 10px;
+  border-radius: var(--wpdf-radius, 6px);
+  background: #fffbe6;
+  color: #1f1f1f;
+  border: 1px solid #e5d78a;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+.wpdf-annot__popup[hidden] { display: none; }
+.wpdf-annot__author {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.wpdf-annot__meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6b6350;
+}
+
 .wpdf-page__placeholder {
   display: flex;
   align-items: center;

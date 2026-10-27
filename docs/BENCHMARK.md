@@ -55,7 +55,7 @@ shows; the evidence column is what you can run.
 | TrueType CID | yes | yes | yes | **yes** | CID-TT without cmap synthesised from glyph order |
 | Type3 | 3 | 5 | 6 | **5** | `type3.pdf` matches MuPDF exactly (ink within 0.001) |
 | Flate / LZW / DCT / CCITT / JBIG2 | yes | yes | yes | **yes** | unit checks per filter, `jb2globals.pdf` at ~2/255 |
-| JPX (JPEG 2000) | yes | yes | yes | **1** | `jpx-decoder.cc` decodes to noise for most encoders (flat colour 14/255, ramp 74/255). This is our worst cell. |
+| JPX (JPEG 2000) | yes | yes | yes | **yes** | vendored OpenJPEG: bit-exact against `opj_decompress` on RGB/grey/CMYK and a tiled, layered codestream; a book cover page lands at 1.06/255 against MuPDF |
 | Anti-aliasing | no | yes | yes | **yes** | scanline AA in `pdfraster.cpp`; the 1/255 gate is only reachable with it |
 | Blend modes / transparency groups | 3.33 | 3.33 | 2 | **3.3** | all 16 modes; `transparency.pdf` Multiply 0.42/255, `/ca 0.5` group 0.54/255 |
 | Shadings (1–7) | — | full | full | **2,3,4,5 only** | types 1/6/7 warn; 4/5 fill but unverified (M4) |
@@ -94,11 +94,11 @@ Everything else lands in tens of milliseconds per page for a 850×1100 bitmap at
 We are not the fastest or the highest-fidelity rasterizer in that study, and we
 have no grounds to claim a placement in it. What the evidence supports: on text,
 fonts, transparency and JBIG2 our fidelity is at the top of their scale; on
-JPEG 2000, Type1 PFB, mesh/function shadings and ICC-for-fills it is at the
+Type1 PFB, mesh/function shadings and ICC-for-fills it is at the
 bottom; throughput is a plausible viewer speed for text-heavy pages and bad for
 scans. The differentiator is not fidelity — it is that this is the only engine in
 that list that runs **inside the browser tab with no server, no upload, MIT
-licence and a 3.0 MB module**, which is the constraint that removed Ghostscript
+licence and a 3.3 MB module**, which is the constraint that removed Ghostscript
 for Alfresco and removes MuPDF for most commercial hosts (AGPL).
 
 ## Before you claim anything to a customer

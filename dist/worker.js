@@ -83,6 +83,7 @@ const handlers = {
     // selectable-looking but empty.
     const text = safe(() => doc.getText(payload.page), []);
     const links = safe(() => doc.getLinks(payload.page), []);
+    const annots = safe(() => doc.getAnnots(payload.page), []);
     return {
       result: {
         rgba: out.imageData.data.buffer,
@@ -91,6 +92,7 @@ const handlers = {
         stats: out.stats,
         text,
         links,
+        annots,
       },
       transfer: [out.imageData.data.buffer],
     };
@@ -102,6 +104,10 @@ const handlers = {
 
   async links(payload) {
     return { result: need(payload.docId).getLinks(payload.page) };
+  },
+
+  async annots(payload) {
+    return { result: need(payload.docId).getAnnots(payload.page) };
   },
 
   async search(payload) {

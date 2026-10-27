@@ -193,20 +193,24 @@ alternate space; `/DeviceN` = n tints → same. Then colour-manage through M1.
 alternate, not as black.
 *Risk*: postscript-function types 0 and 4 — reuse `ShadingFn::eval`, extend it.
 
-### M6 — JPEG 2000 decoder (3–5 days) — *open*
-*Why*: **broken today** — OpenJPEG-produced codestreams decode to noise while
-MuPDF is correct. This is the only item where the output is garbage rather than
-merely less accurate.
-*Where*: `src/cpp/jpx-decoder.cc` (2070 lines, vendored from nanopdf).
-*Approach*: first write a native probe that dumps SIZ/COD/QCD/SOT tile-part
-geometry and the decoded DC level for `test/fixtures/photo-jpx.pdf`; the failure
-smells like tile-part/layer handling rather than entropy decode, since a flat
-colour image is also wrong. If the port is structurally off, vendor openjpeg's
-`j2k` decoder (BSD-2) the way JBIG2 was vendored, rather than repairing it.
-*Fixture*: `photo-jpx.pdf` (synthetic chart, committed) plus one photo-encoded
-JP2 and one raw `.j2c` codestream.
-*Accept*: ≤ 4/255 mean abs diff against MuPDF on all three; no garbage page.
-*Risk*: size — a full openjpeg port costs ~1 MB wasm. Check the budget first.
+### M6 — JPEG 2000 decoder — *done (OpenJPEG vendored)*
+*Why it was open*: **broken** — the in-tree nanopdf decoder assumed a single
+tile-part and read packet headers without the tag-tree coding the format
+mandates, so a real producer's codestream (tiles, layers, one tile-part per
+layer) decoded to noise while a synthetic single-tile fixture passed. Measured on
+a 1280×1656 cover: 100.4/255 mean abs diff against MuPDF before, 1.06/255 after.
+*What shipped*: OpenJPEG 2.5.4 (BSD-2) vendored under `src/cpp/openjpeg/` and
+compiled as C99 objects by `build.sh`; `src/cpp/jpxopenjpeg.cpp` is the bridge
+(memory stream, raw codestream or JP2 container, sampling/depth normalised to
+8-bit interleaved); `Document::decodeJpx` calls it and the nanopdf decoder is
+deleted.
+*Accept, met*: bit-exact against `opj_decompress` for RGB, grey, CMYK and a
+4-decomposition-level tiled codestream with three quality layers; the cover page
+inside the 1/255 text gate against MuPDF.
+*Cost*: the wasm grew 3.08 MB → 3.27 MB (~190 KB), not the ~1 MB this file
+predicted. The working set is 4 bytes per sample per component inside the
+decoder, so a very large JPX page can be refused rather than rendered — see
+`README.md` → Limits.
 
 ### M7 — Type3, Type1 PFB, CID-CFF in OpenType (~1 week) — *Type3 and OTTO done, PFB open*
 *Why*: old TeX/plot output (Type3), legacy Type1 (PFB), and CJK OTFs whose CFF

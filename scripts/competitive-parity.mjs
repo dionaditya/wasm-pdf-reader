@@ -29,8 +29,7 @@ const AREAS = [
   },
   {
     id: 'codecs', name: 'Image codecs (Flate/DCT/CCITT/JBIG2/JPX)', weight: 8,
-    scores: { ours: 85, pdfjs: 100, mupdf: 100 },
-    gap: 'JPEG 2000 decodes only one encoder; OpenJPEG codestreams render noise',
+    scores: { ours: 100, pdfjs: 100, mupdf: 100 },
   },
   {
     id: 'colour', name: 'Colour management (ICC, spot, DeviceN)', weight: 7,
@@ -59,8 +58,8 @@ const AREAS = [
   },
   {
     id: 'annots', name: 'Annotations (render, links, markup)', weight: 6,
-    scores: { ours: 75, pdfjs: 95, mupdf: 95 },
-    gap: 'no note-text panel, no annotation authoring/export, highlights use alpha not multiply',
+    scores: { ours: 85, pdfjs: 95, mupdf: 95 },
+    gap: 'no comment sidebar and no authoring/export; highlights use alpha not multiply',
   },
   {
     id: 'forms', name: 'Forms (AcroForm read, fill, save)', weight: 6,
@@ -118,11 +117,6 @@ const ITEMS = [
     why: 'the text layer is selectable but not navigable by a screen reader',
   },
   {
-    title: 'JPEG 2000: vendor openjpeg\'s j2k decoder',
-    areas: { codecs: 100 }, effort: '3–5 days',
-    why: 'the only output that is garbage rather than merely off',
-  },
-  {
     title: 'ICC for fills via lcms2',
     areas: { colour: 90 }, effort: '3–4 days',
     why: 'print-derived CMYK art is visibly off next to MuPDF',
@@ -143,7 +137,7 @@ const ITEMS = [
     why: 'legacy TeX output and Japanese vertical text fall back to a substitute face',
   },
   {
-    title: 'Annotations: note panel, multiply highlights, authoring',
+    title: 'Annotations: comment sidebar, multiply highlights, authoring',
     areas: { annots: 90 }, effort: '1 week',
     why: 'review workflows stop at "markup renders"',
   },

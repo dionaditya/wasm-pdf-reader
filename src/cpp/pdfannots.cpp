@@ -151,4 +151,124 @@ const std::vector<Document::Link>& Document::links(int idx) {
     return linkCache[idx] = std::move(out);
 }
 
+namespace {
+
+// PDF text strings are byte strings; a leading FE FF marks UTF-16BE. Annotations
+// written by Acrobat and Preview use that form for any non-ASCII comment.
+std::string annotText(const ObjP& o) {
+    if (!o || o->t != O_STR) return std::string();
+    const std::string& s = o->str;
+    bool utf16 = s.size() >= 2 && (unsigned char)s[0] == 0xFE && (unsigned char)s[1] == 0xFF;
+    if (!utf16) {
+        // PDFDocEncoding matches Latin-1 for the printable range, which is what
+        // every producer writes in practice.
+        return s;
+    }
+    std::string out;
+    for (size_t i = 2; i + 1 < s.size(); i += 2) {
+        unsigned u = ((unsigned char)s[i] << 8) | (unsigned char)s[i + 1];
+        if (u >= 0xD800 && u <= 0xDBFF && i + 3 < s.size()) {
+            unsigned lo = ((unsigned char)s[i + 2] << 8) | (unsigned char)s[i + 3];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                i += 2;
+            }
+        }
+        if (u < 0x80) {
+            out.push_back((char)u);
+        } else if (u < 0x800) {
+            out.push_back((char)(0xC0 | (u >> 6)));
+            out.push_back((char)(0x80 | (u & 0x3F)));
+        } else if (u < 0x10000) {
+            out.push_back((char)(0xE0 | (u >> 12)));
+            out.push_back((char)(0x80 | ((u >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (u & 0x3F)));
+        } else {
+            out.push_back((char)(0xF0 | (u >> 18)));
+            out.push_back((char)(0x80 | ((u >> 12) & 0x3F)));
+            out.push_back((char)(0x80 | ((u >> 6) & 0x3F)));
+            out.push_back((char)(0x80 | (u & 0x3F)));
+        }
+    }
+    return out;
+}
+
+void readRect(Document* doc, const ObjP& an, const char* key,
+              double& x0, double& y0, double& x1, double& y1) {
+    x0 = y0 = x1 = y1 = 0;
+    ObjP r = doc->resolve(an->get(key));
+    if (!r || r->t != O_ARR || r->arr.size() < 4) return;
+    double v[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) v[i] = objNum(doc->resolve(r->arr[i]), 0);
+    x0 = std::min(v[0], v[2]); x1 = std::max(v[0], v[2]);
+    y0 = std::min(v[1], v[3]); y1 = std::max(v[1], v[3]);
+}
+
+}  // namespace
+
+// Every annotation that is not a link. Links keep their own accessor because the
+// viewer turns them into anchors; these become comment marks with a popup.
+const std::vector<Document::Annot>& Document::annots(int idx) {
+    auto cached = annotCache.find(idx);
+    if (cached != annotCache.end()) return cached->second;
+
+    std::vector<Annot> out;
+    if (idx >= 0 && idx < (int)pages.size()) {
+        const ObjP& page = pages[idx];
+        ObjP annots = resolve(page->get("Annots"));
+        if (annots && annots->t == O_ARR) {
+            for (auto& entry : annots->arr) {
+                ObjP an = resolve(entry);
+                if (!an || an->t != O_DICT) continue;
+
+                Annot a;
+                a.subtype = objName(resolve(an->get("Subtype")));
+                // Links have their own path; a popup is only the geometry of its
+                // parent note, so painting it again would be a second window.
+                if (a.subtype.empty() || a.subtype == "Link" || a.subtype == "Popup") continue;
+
+                // /F bit 2 = Hidden, bit 6 = NoView: neither is on-screen content.
+                int flags = (int)objNum(resolve(an->get("F")), 0);
+                if ((flags & 2) || (flags & 32)) continue;
+
+                readRect(this, an, "Rect", a.x0, a.y0, a.x1, a.y1);
+
+                a.contents = annotText(resolve(an->get("Contents")));
+                a.author = annotText(resolve(an->get("T")));
+                a.subject = annotText(resolve(an->get("Subj")));
+                a.name = objName(resolve(an->get("Name")));
+                a.modified = annotText(resolve(an->get("M")));
+
+                ObjP c = resolve(an->get("C"));
+                if (c && c->t == O_ARR && !c->arr.empty()) {
+                    double v[4] = {0, 0, 0, 0};
+                    size_t ncomp = std::min<size_t>(4, c->arr.size());
+                    for (size_t i = 0; i < ncomp; i++)
+                        v[i] = objNum(resolve(c->arr[i]), 0);
+                    if (ncomp == 1) {
+                        a.color[0] = a.color[1] = a.color[2] = (float)v[0];
+                    } else if (ncomp == 3) {
+                        for (int i = 0; i < 3; i++) a.color[i] = (float)v[i];
+                    } else if (ncomp >= 4) {
+                        // Naive CMYK -> RGB: the colour is a UI hint here, not ink.
+                        a.color[0] = (float)((1 - v[0]) * (1 - v[3]));
+                        a.color[1] = (float)((1 - v[1]) * (1 - v[3]));
+                        a.color[2] = (float)((1 - v[2]) * (1 - v[3]));
+                    }
+                    a.hasColor = true;
+                }
+
+                ObjP popup = resolve(an->get("Popup"));
+                if (popup && popup->t == O_DICT) {
+                    readRect(this, popup, "Rect", a.px0, a.py0, a.px1, a.py1);
+                    a.hasPopup = true;
+                }
+
+                out.push_back(std::move(a));
+            }
+        }
+    }
+    return annotCache[idx] = std::move(out);
+}
+
 }  // namespace pdf

@@ -240,6 +240,10 @@ await check('links: named destination resolves through /Names /Dests', () => {
 await check('links: pages without annotations report none', () => {
   assert.deepEqual(linksDoc.getLinks(2), []);
 });
+
+await check('annotations: /Link annotations are not listed by getAnnots', () => {
+  assert.deepEqual(linksDoc.getAnnots(0), [], 'links stay on getLinks()');
+});
 linksDoc.close();
 
 // ── annotation fallbacks: /QuadPoints marks and note icons without /AP ─────
@@ -313,6 +317,25 @@ await check('annotations: marks follow the page CTM on a rotated page', async ()
   assert.equal(imageData.height, 612);
   const cyan = countPixels(imageData, (r, g, b) => b > 200 && r < 220 && g > 180);
   assert.ok(cyan > 4000, `highlight should cover the rotated line, got ${cyan} px`);
+});
+
+// The icon is only half of a comment: the words live in the annotation object,
+// so getAnnots() has to report them or a reviewed PDF reads as unmarked.
+await check('annotations: note comments carry their text and geometry', () => {
+  const list = annotDoc.getAnnots(1);
+  assert.equal(list.length, 3);
+  assert.deepEqual(list.map((a) => a.contents),
+                   ['Note number 1', 'Note number 2', 'Note number 3']);
+  assert.equal(list[0].sub, 'Text');
+  assert.equal(list[0].name, 'Note');
+  assert.ok(list[0].x1 > list[0].x0 && list[0].y1 > list[0].y0, 'rect has area');
+  assert.deepEqual(list[0].color, [1, 0.85, 0]);
+});
+
+await check('annotations: markup without /Contents is still reported', () => {
+  const list = annotDoc.getAnnots(0);
+  assert.deepEqual(list.map((a) => a.sub), ['Highlight', 'Underline', 'StrikeOut', 'Squiggly']);
+  assert.equal(list[0].contents, undefined, 'no /Contents means no comment text');
 });
 annotDoc.close();
 

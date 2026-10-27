@@ -188,6 +188,25 @@ struct Document {
     const std::vector<Link>& links(int idx);
     int pageIndex(const ObjP& pageRef);            // ref -> index, -1 if unknown
 
+    // ── annotations (everything that is not a link) ──────────────────────
+    // Notes, markup, stamps and widgets. The renderer paints their appearance
+    // streams, but a comment's text lives in the object, not the page, so the
+    // viewer needs this list to show it at all.
+    struct Annot {
+        std::string subtype;                       // /Subtype without the slash
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;     // /Rect, page space, y up
+        std::string contents;                      // /Contents, UTF-8
+        std::string author;                        // /T
+        std::string subject;                       // /Subj
+        std::string name;                          // /Name (icon / stamp)
+        std::string modified;                      // /M
+        bool hasColor = false;
+        float color[3] = {0, 0, 0};                // /C as RGB
+        bool hasPopup = false;
+        double px0 = 0, py0 = 0, px1 = 0, py1 = 0; // popup /Rect
+    };
+    const std::vector<Annot>& annots(int idx);
+
     // ── stream decoding ──────────────────────────────────────────────────
     // Optional content (layers): /OCProperties decides which OCGs are visible
     // in the default configuration. Rendering consults this for /OC marked
@@ -229,6 +248,7 @@ struct Document {
     void  reconstructXref();
     std::map<std::string, std::shared_ptr<Font>> fontCache;
     std::map<int, std::vector<Link>> linkCache;
+    std::map<int, std::vector<Annot>> annotCache;
     std::map<int, int> pageIndexByObj;
     ObjP resolveDest(const ObjP& dest, int depth);
     ObjP lookupNamedDest(const std::string& name);

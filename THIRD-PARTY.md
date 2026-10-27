@@ -5,7 +5,7 @@
 | stb_image | `src/cpp/stb_image.h` | MIT / Public Domain | Sean Barrett, https://github.com/nothings/stb |
 | stb_truetype | `src/cpp/stb_truetype.h` | MIT / Public Domain | Sean Barrett, https://github.com/nothings/stb |
 | CCITT G3/G4 fax decoder | `src/cpp/ccitt-decoder.hh` | BSD-3-Clause | The PDFium Authors / Foxit Software Inc., vendored via https://github.com/lighttransport/nanopdf |
-| JPEG 2000 decoder | `src/cpp/jpx-decoder.{cc,hh}` | Apache-2.0 | Light Transport Entertainment Inc. (nanopdf) |
+| JPEG 2000 decoder | `src/cpp/openjpeg/` (22 `.c` + headers) | BSD-2-Clause | uclouvain/openjpeg v2.5.4 — `LICENSES/BSD-2-Clause-openjpeg.txt`. The library sources are unmodified; `opj_config.h` and `opj_config_private.h` are ours (CMake normally generates them) and `jpxopenjpeg.cpp` is the first-party bridge |
 | CFF standard strings / encodings | `src/cpp/cff-parser.{cc,hh}` | Apache-2.0 | Light Transport Entertainment Inc. (nanopdf) |
 | Adobe CMap resources | `src/cpp/cmaps_data.cpp` | BSD-3-Clause | Adobe (`adobe-type-tools/cmap-resources`), packed by `scripts/build-cmaps.py` |
 | JBIG2 + fax decoders | `src/cpp/jbig2gen/` | Apache-2.0 (PDFium) / BSD-2 (wabt) / MIT (simde) | PDFium's codecs, taken from Mozilla's `pdf.js.jbig2` wasm build and translated to C with wabt's `wasm2c`; the generated `jbig2.c` is linked into `pdf-reader.wasm` |
@@ -13,6 +13,12 @@
 | Liberation Sans / Serif / Mono | `src/cpp/fonts_data.h` (families 3-5) | OFL-1.1, Reserved Font Name "Liberation" | Copyright (c) 2012 Red Hat, Inc.; digitized data copyright (c) 2010 Google Corporation — `LICENSES/OFL-1.1.txt` |
 | Carlito | `src/cpp/fonts_data.h` (family 6) | OFL-1.1, Reserved Font Name "Carlito" | Copyright (c) 2010-2013 tyPoland Lukasz Dziedzic — `LICENSES/OFL-1.1.txt` |
 | Caladea | `src/cpp/fonts_data.h` (family 7) | OFL-1.1 | Copyright 2012 The Caladea Project Authors (Huerta Tipográfica) — `LICENSES/OFL-1.1.txt` |
+
+OpenJPEG's BSD-2-Clause notice has to travel with the binary, so its licence text
+lives in `LICENSES/BSD-2-Clause-openjpeg.txt` and that path is in the table above;
+the sources carry their own headers unchanged. Only the two `opj_config*.h` files
+are ours, and they are minimal on purpose (no filesystem, no threads, no
+`posix_memalign` — see the comments in them).
 
 The CMap tables are a generated artifact: `scripts/build-cmaps.py` reads Adobe's
 text CMaps (`begincodespacerange` / `begincidrange` / `begincidchar`) and emits one
@@ -65,14 +71,15 @@ The engine is a small first-party core around large vendored decoders. Line coun
 
 | Part | Lines | Share |
 |---|---|---|
-| `simde/` (MIT) | 257,515 | 57 % |
-| `jbig2gen/jbig2.c` (generated from PDFium, Apache-2.0) | 54,232 | 12 % |
-| `cmaps_data.cpp` (generated data, Adobe BSD-3) | 54,941 | 12 % |
-| `fonts_data.h` (font binaries, OFL/Vera) | 38,789 | 9 % |
-| `pdf_glyphs.h` / `pdf_widths.h` (generated metrics) | 21,556 | 5 % |
+| `simde/` (MIT) | 257,515 | 51 % |
+| `jbig2gen/jbig2.c` (generated from PDFium, Apache-2.0) | 54,232 | 11 % |
+| `cmaps_data.cpp` (generated data, Adobe BSD-3) | 54,941 | 11 % |
+| `openjpeg/` (JPEG 2000, BSD-2) | 55,159 | 11 % |
+| `fonts_data.h` (font binaries, OFL/Vera) | 38,789 | 8 % |
+| `pdf_glyphs.h` / `pdf_widths.h` (generated metrics) | 21,556 | 4 % |
 | `stb_image.h`, `stb_truetype.h` (MIT/PD) | 13,067 | 3 % |
-| nanopdf JPEG 2000 + CFF tables, CCITT, wabt runtime | 6,371 | 1 % |
-| **first-party** (`pdfdoc`, `pdfraster`, `wpdf_api`, `pdfannots`, `cfffont`, `cmap`, `jbig2native`, headers) | **~6,500** | 1.4 % |
+| nanopdf CFF tables, CCITT, wabt runtime | 4,299 | 0.9 % |
+| **first-party** (`pdfdoc`, `pdfraster`, `wpdf_api`, `pdfannots`, `cfffont`, `cmap`, `jbig2native`, `jpxopenjpeg`, headers) | **~4,650** | 0.9 % |
 
 That ratio is deliberate: nobody should hand-write a JBIG2 arithmetic decoder or
 SIMD polyfills. What is first-party is the part no library offered — the PDF object

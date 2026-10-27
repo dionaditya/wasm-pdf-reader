@@ -375,6 +375,8 @@ export function mountPdfReader(target, options = {}) {
       }
       const linkEl = await linkLayer(pageEl, state.page);
       if (linkEl) turn.appendChild(linkEl);
+      const annotEl = await annotLayer(pageEl, state.page);
+      if (annotEl) turn.appendChild(annotEl);
       // Selection bars are painted in screen space relative to the *outer* page
       // box, so they stay outside the turning layer.
       selectionLayer(pageEl);
@@ -460,6 +462,8 @@ export function mountPdfReader(target, options = {}) {
       }
       const linkEl = await linkLayer(pageEl, index);
       if (linkEl) turn.appendChild(linkEl);
+      const annotEl = await annotLayer(pageEl, index);
+      if (annotEl) turn.appendChild(annotEl);
       selectionLayer(pageEl);
       const hl = opts.highlights?.(index, scale) || [];
       if (hl.length) turn.appendChild(highlightLayer(hl, pageEl));
@@ -579,6 +583,103 @@ export function mountPdfReader(target, options = {}) {
 
   async function loadLinks(index) {
     try { return await state.doc.loadLinks(index); } catch { return []; }
+  }
+
+  async function loadAnnots(index) {
+    try {
+      const doc = state.doc;
+      if (typeof doc.loadAnnots === 'function') return await doc.loadAnnots(index);
+      if (typeof doc.getAnnots === 'function') return doc.getAnnots(index);
+      return [];
+    } catch { return []; }
+  }
+
+  // Annotations with text: the bitmap already shows the note icon or the stamp,
+  // but a comment's words live in the annotation object. Each mark is a hit
+  // target over the painted appearance that opens a bubble with the comment —
+  // without it a reviewed PDF looks like it has no comments at all.
+  async function annotLayer(pageEl, pageIndex) {
+    const annots = await loadAnnots(pageIndex);
+    const marks = annots.filter((a) =>
+      a && (a.x1 - a.x0) > 0.5 && (a.y1 - a.y0) > 0.5 &&
+      (a.contents || a.author || a.sub));
+    if (!marks.length) return null;
+    const scale = effectiveScale();
+    const layer = el('div', 'wpdf-page__overlay');
+    for (let i = 0; i < marks.length; i++) {
+      const annot = marks[i];
+      const css = state.doc.boxToCss(annot, pageIndex, scale);
+      const mark = el('button', 'wpdf-annot');
+      mark.type = 'button';
+      mark.dataset.key = `a${pageIndex}-${i}`;
+      mark.style.left = `${css.left}px`;
+      mark.style.top = `${css.top}px`;
+      mark.style.width = `${css.width}px`;
+      mark.style.height = `${css.height}px`;
+      const label = annot.contents || annot.name || annot.sub;
+      mark.title = label;
+      mark.setAttribute('aria-label', label);
+      mark.setAttribute('aria-expanded', 'false');
+      mark.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleAnnotPopup(pageEl, mark, annot);
+      });
+      layer.appendChild(mark);
+    }
+    return layer;
+  }
+
+  // One bubble per page, positioned from screen rects so it lands correctly even
+  // when the turning layer is rotated 90°.
+  function toggleAnnotPopup(pageEl, mark, annot) {
+    const open = pageEl.querySelector(':scope > .wpdf-annot__popup');
+    const isSame = open && open.dataset.owner === (mark.dataset.key || '');
+    if (open) open.remove();
+    for (const m of pageEl.querySelectorAll('.wpdf-annot[aria-expanded="true"]'))
+      m.setAttribute('aria-expanded', 'false');
+    if (isSame) return;
+
+    const popup = el('div', 'wpdf-annot__popup');
+    if (annot.author) popup.appendChild(el('span', 'wpdf-annot__author', annot.author));
+    popup.appendChild(document.createTextNode(annot.contents || annot.name || annot.sub));
+    const meta = [annot.sub, annot.date].filter(Boolean).join(' · ');
+    if (meta) popup.appendChild(el('span', 'wpdf-annot__meta', meta));
+
+    pageEl.appendChild(popup);
+    const pageBox = pageEl.getBoundingClientRect();
+    const markBox = mark.getBoundingClientRect();
+    let left = markBox.left - pageBox.left;
+    let top = markBox.bottom - pageBox.top + 6;
+    const maxLeft = pageBox.width - popup.offsetWidth - 4;
+    left = Math.max(4, Math.min(left, Math.max(4, maxLeft)));
+    // Flip above the mark when the bubble would run off the bottom of the page.
+    if (top + popup.offsetHeight > pageBox.height - 4) {
+      top = Math.max(4, markBox.top - pageBox.top - popup.offsetHeight - 6);
+    }
+    popup.style.left = `${left}px`;
+    popup.style.top = `${top}px`;
+    popup.dataset.owner = mark.dataset.key || '';
+    mark.setAttribute('aria-expanded', 'true');
+
+    const close = (ev) => {
+      if (ev && (ev.type === 'keydown')) {
+        if (ev.key !== 'Escape') return;
+      } else if (ev && popup.contains(ev.target)) {
+        return;
+      } else if (ev && mark.contains(ev.target)) {
+        return;
+      }
+      popup.remove();
+      mark.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', close, true);
+      document.removeEventListener('keydown', close, true);
+    };
+    // Deferred: the click that opened the bubble is still propagating.
+    setTimeout(() => {
+      document.addEventListener('click', close, true);
+      document.addEventListener('keydown', close, true);
+    }, 0);
   }
 
   // Link annotations: every /Link with a URI or an internal /GoTo becomes a

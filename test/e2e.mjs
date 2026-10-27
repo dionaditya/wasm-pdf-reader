@@ -432,6 +432,66 @@ try {
   await reactPage.screenshot(join(shots, 'react.png'));
   await reactPage.close();
 
+  // ── annotation comments ─────────────────────────────────────────────────
+  // The bitmap shows the note icon; the comment's words only reach the page
+  // through getAnnots() and the mark the viewer draws over the icon. A file
+  // with 3 text notes on page 2 proves the whole path: fetch a fixture into the
+  // live viewer, click a mark, read the bubble.
+  const annotPage = await newPage(9333, 'about:blank');
+  await annotPage.setViewport(1280, 900, 1);
+  await annotPage.goto(`${base}/examples/vanilla/`);
+  await annotPage.waitFor('window.__demoReady && true', { label: 'viewer boot (annots)' })
+    .then(() => annotPage.eval('window.__demoReady'));
+  // setFile right after boot is clobbered by the demo's own document finishing
+  // its first render, so let that land first.
+  await annotPage.waitFor(
+    '(() => { const c = document.querySelector(".wpdf-page canvas"); return !!c && c.width > 300; })()',
+    { label: 'demo document painted' },
+  );
+
+  await step('a fixture with text notes loads into the live viewer', async () => {
+    await annotPage.eval(`(async () => {
+      const blob = await (await fetch('/test/fixtures/annot-quads.pdf')).blob();
+      await window.viewer.setFile(new File([blob], 'annot-quads.pdf', { type: 'application/pdf' }));
+    })()`);
+    await annotPage.waitFor('window.viewer.document.pageCount === 4', { label: 'annot fixture open' });
+  });
+
+  await step('note comments are readable through getAnnots', async () => {
+    // The demo document is worker-backed, where getAnnots() is a cache read that
+    // only answers for pages already rendered; loadAnnots() is the async form
+    // that works on both document kinds (same split as getText/loadText).
+    const list = await annotPage.eval(`(async () => {
+      const doc = window.viewer.document;
+      if (typeof doc.loadAnnots !== 'function') return null;
+      return await doc.loadAnnots(1);
+    })()`);
+    assert.ok(Array.isArray(list), 'document.loadAnnots() must exist and return an array');
+    assert.equal(list.length, 3, `page 2 has three notes, got ${list.length}`);
+    assert.deepEqual(list.map((a) => a.contents),
+                     ['Note number 1', 'Note number 2', 'Note number 3']);
+  });
+
+  await step('clicking a note mark opens its comment bubble', async () => {
+    await annotPage.eval('window.viewer.goToPage(1)');
+    await annotPage.waitFor('document.querySelectorAll(".wpdf-annot").length === 3', {
+      label: 'annotation marks on page 2',
+    });
+    await annotPage.eval('document.querySelectorAll(".wpdf-annot")[0].click()');
+    await annotPage.waitFor('!!document.querySelector(".wpdf-annot__popup")', {
+      label: 'comment bubble',
+    });
+    const text = await annotPage.eval('document.querySelector(".wpdf-annot__popup").textContent');
+    assert.match(text, /Note number 1/, `bubble text was ${JSON.stringify(text)}`);
+    await annotPage.screenshot(join(shots, 'annot-comment.png'));
+
+    // Escape closes it, so the bubble cannot get stuck over the page.
+    await annotPage.eval('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))');
+    await annotPage.waitFor('!document.querySelector(".wpdf-annot__popup")', { label: 'bubble closed' });
+  });
+
+  await annotPage.close();
+
   code = failures.length ? 1 : 0;
 } finally {
   chrome.kill();

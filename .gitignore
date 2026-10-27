@@ -3,6 +3,7 @@ node_modules/
 
 # build + generated output that is not published
 _site/
+build/
 examples/react/bundle.js
 *.log
 
@@ -17,3 +18,5 @@ test/fixtures/huge-sparse.pdf
 .DS_Store
 .vscode/
 .idea/
+# 1.8 MB test book, served from _samples for /examples/mupdf/
+_samples/mupdf-book.pdf

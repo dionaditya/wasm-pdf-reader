@@ -1,7 +1,7 @@
 # wasm-pdf-reader
 
 A PDF reader in WebAssembly: it parses, rasterizes and extracts text from a PDF
-inside the browser tab. No server, no upload, no CDN — a 3.1 MB module (1.9 MB
+inside the browser tab. No server, no upload, no CDN — a 3.3 MB module (2.0 MB
 gzipped, 0.9 MB of it the Adobe CMap tables) that a vanilla page or a React app
 can drive.
 
@@ -56,8 +56,9 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   Software rasterizer with 4× vertical supersampling, returning RGBA8.
   Images larger than the destination are box-averaged, so a 5000 px scan drawn
   at 600 px stays readable instead of aliasing.
-- **Images** — Flate, DCT (JPEG), CCITT G3/G4 fax, JBIG2, and JPEG 2000 (see
-  [Limits](#limits): the JPX path only handles some encoders).
+- **Images** — Flate, DCT (JPEG), CCITT G3/G4 fax, JBIG2, and JPEG 2000 through
+  a vendored OpenJPEG (tiled and layered codestreams included; see
+  [Limits](#limits) for its memory cost).
   PDFium's JBIG2 and fax decoders are translated to C with `wasm2c` and linked
   into `pdf-reader.wasm`, so scans decode in the same pass as everything else —
   no second binary, no JS hand-off, no re-render. Stencil `/Mask` streams decode
@@ -86,7 +87,10 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   without an appearance (the common case for highlight, underline, strikeout
   and squiggly) are synthesised from `/QuadPoints` and `/C`, including one mark
   per quad; `/Text` notes without an `/AP` icon get a note icon built from
-  `/Rect`. An appearance stream always wins when present.
+  `/Rect`. An appearance stream always wins when present. `document.getAnnots()`
+  returns every non-link annotation with `/Contents`, `/T`, `/C` and the popup
+  rectangle, and the viewer turns each one into a mark that opens the comment —
+  an icon alone leaves a reviewed PDF's comments unreadable.
 - **Optional content** — `/OCProperties` `/OFF`/`/ON` decide which OCGs paint;
   hidden `/OC ... BDC` sections and XObjects with an `/OC` entry are skipped.
 - **Outline** — `document.outline` returns `[{title, page}]` for the bookmark
@@ -260,12 +264,14 @@ with a global symbol dictionary, drawn at 1:1:
     renderer caps a page at 40 MP`
   - `render failed: not enough memory for a 6000x8000 px page (183 MB); the wasm
     heap could not grow`
-- **JPEG 2000 covers one encoder so far.** The bundled JPX decoder renders the
-  pdf.js reference fixture correctly, but a codestream written by OpenJPEG —
-  what Pillow and most converters emit — decodes to noise: a flat-colour
-  64x48 image differs from MuPDF by 14/255 and a grey ramp by 74/255, while the
-  same images as JPEG, CCITT or JBIG2 match to ~2/255. Fixable; until then do
-  not trust `/JPXDecode` pages.
+- **JPEG 2000 is decoded by OpenJPEG, and costs memory.** The engine vendors
+  OpenJPEG 2.5.4 (`src/cpp/openjpeg/`, BSD-2-Clause) — the same library MuPDF and
+  PDFium use — so tiled, layered and multi-tile-part codestreams all decode:
+  verified bit-exact against `opj_decompress` for RGB, grey, CMYK and a
+  4-decomposition-level tiled codestream. The catch is the working set: the
+  decoder holds 4 bytes per sample per component before the bitmap exists, so a
+  very large JPX page can be refused with `JPEG 2000 image too large to decode
+  inline` where a smaller DCT page would render.
 - **Mesh shadings 4/5 are experimental.** The triangles fill, but neither type
   is verified: on `test/fixtures/mesh.pdf` the type 4 page is malformed (it
   omits the per-vertex edge flag), so MuPDF paints nothing and our gradient only
@@ -298,22 +304,22 @@ fixture and the four cells where we would score at the bottom are in
 | --- | ---: | ---: | ---: | ---: |
 | Parsing, xref, object streams, damaged files | 8% | 92% | 100% | 100% |
 | Encryption (Standard handler R2–R6) | 5% | 92% | 85% | 100% |
-| Image codecs (Flate/DCT/CCITT/JBIG2/JPX) | 8% | 85% | 100% | 100% |
+| Image codecs (Flate/DCT/CCITT/JBIG2/JPX) | 8% | 100% | 100% | 100% |
 | Colour management (ICC, spot, DeviceN) | 7% | 70% | 85% | 100% |
 | Fonts and encodings (TT, CFF/CID, CMaps, Type3) | 10% | 80% | 90% | 95% |
 | Content stream: paths, clips, blend, transparency | 10% | 90% | 95% | 100% |
 | Shadings (types 1–7) | 5% | 40% | 100% | 100% |
 | Tiling patterns, images, masks | 5% | 90% | 95% | 100% |
-| Annotations (render, links, markup) | 6% | 75% | 95% | 95% |
+| Annotations (render, links, markup) | 6% | 85% | 95% | 95% |
 | Forms (AcroForm read, fill, save) | 6% | 45% | 90% | 100% |
 | Text extraction and structure | 6% | 78% | 95% | 100% |
 | Viewer UX (toolbar, rail, search, print) | 8% | 78% | 100% | 50% |
 | Accessibility (tagged PDF, screen readers) | 5% | 20% | 90% | 35% |
 | Architecture (worker, ranged loading, cache) | 6% | 85% | 100% | 80% |
 | Ecosystem (release, docs, integrations, testing) | 5% | 30% | 100% | 90% |
-| **Weighted total** | **100%** | **73%** | **95%** | **90%** |
+| **Weighted total** | **100%** | **75%** | **95%** | **90%** |
 
-**Parity: 77 % of pdf.js, 81 % of MuPDF.js** (weighted score 72.9 of 100; pdf.js
+**Parity: 79 % of pdf.js, 83 % of MuPDF.js** (weighted score 74.7 of 100; pdf.js
 94.8, MuPDF.js 90.3). Not a benchmark: a capability count. It says nothing about
 speed on a specific file — that needs the 30-document pilot described in
 [Embedding in a host app](#embedding-in-a-host-app).
@@ -324,8 +330,8 @@ speed on a specific file — that needs the 30-document pilot described in
   CJK CMaps), text extraction and the text layer are all in the high 80s–90s.
   A contract, an invoice, a scanned letter: a swap is defensible today.
 - **The losses cluster in three places.** *Visually heavy* documents (shadings
-  40 %, ICC 70 %, JPX 85 %), *interactive* ones (forms 45 %, annotations 75 %),
-  and *non-visual* ones (accessibility 20 %, architecture 85 %).
+  40 %, ICC 70 %), *interactive* ones (forms 45 %, annotations 85 %), and
+  *non-visual* ones (accessibility 20 %, architecture 85 %).
 - **MuPDF.js loses where pdf.js wins and vice versa.** MuPDF.js has no viewer at
   all (50 % viewer UX, 35 % a11y) but beats everything on decoding and can edit
   and write. pdf.js still leads on accessibility and the display list; its
@@ -334,7 +340,7 @@ speed on a specific file — that needs the 30-document pilot described in
 - **Interop reality:** `mupdf` 1.28.1 is **AGPL-3.0-or-later** (14.3 MB unpacked,
   commercial licence sold separately); `pdfjs-dist` 6.4.299 is Apache-2.0
   (34.9 MB unpacked: several builds, CMaps, standard fonts, two extra wasm
-  modules); this package is **MIT** and 3.1 MB of wasm with no side modules.
+  modules); this package is **MIT** and 3.3 MB of wasm with no side modules.
 
 ### Where this engine is ahead, and stays ahead
 
@@ -363,14 +369,13 @@ Everything left, priced in points of the same weighted score (that is what the
 | Accessibility: tagged structure tree, roles, read order | +2.3 | 65% | 2–3 weeks | the text layer is selectable but not navigable by a screen reader |
 | Ecosystem: publish 0.3.0, docs site, framework examples, CI matrix | +1.8 | 65% | 1 week + ongoing | registry is stale, and there is no fuzzing or disclosure pipeline |
 | ICC for fills via lcms2 | +1.4 | 90% | 3–4 days | print-derived CMYK art is visibly off next to MuPDF |
-| JPEG 2000: vendor openjpeg's j2k decoder | +1.2 | 100% | 3–5 days | the only output that is garbage rather than merely off |
 | Type1 PFB, vertical CMaps, no-shaped-fallback warning | +1.2 | 92% | 4–6 days | legacy TeX output and Japanese vertical text fall back to a substitute face |
 | Viewer UX: outline panel, zoom presets, gestures | +1.1 | 92% | 1 week | the chrome is the first thing a reviewer compares against pdf.js |
 | Display list (M9.3 remainder) | +0.9 | 100% | ~1 week | a new zoom scale re-interprets the page; the cache only covers scales already rendered |
-| Annotations: note panel, multiply highlights, authoring | +0.9 | 90% | 1 week | review workflows stop at "markup renders" |
 | Text structure: lines/blocks, /ToUnicode policy, document index | +0.8 | 92% | 3–4 days | every pdf.js consumer expects line/block grouping |
+| Annotations: comment sidebar, multiply highlights, authoring | +0.3 | 90% | 1 week | review workflows stop at "markup renders" |
 | Encryption: public-key handler, onPassword retry | +0.3 | 97% | 2–3 days | rare, but a hard fail when a host meets a /Adobe.PubSec file |
-| **All of the above** | **+17.0** | **90%** |  | **95% of pdf.js, 100% of MuPDF.js** |
+| **All of the above** | **+15.2** | **90%** |  | **95% of pdf.js, 100% of MuPDF.js** |
 
 Two things do not move with any of that: **writing** (editing, redaction,
 signing) and **full accessibility certification**. The first is a declared
@@ -392,9 +397,8 @@ touchpoints, fixtures and acceptance numbers.
 - **M1–M8 are done** (ICC parsing, tiling patterns, blend modes and transparency
   groups, mesh 4/5, Separation/DeviceN, Type3 and `OTTO`-wrapped CFF, OCG
   visibility, AcroForm fields, outline, thumbnails, print). What is left of them
-  is residue, not scope: full ICC for fills, shadings types 1/6/7, the JPEG 2000
-  decoder (OpenJPEG codestreams decode to noise), Type1 PFB, `gs /SMask`, and the
-  form-field repaint.
+  is residue, not scope: full ICC for fills, shadings types 1/6/7, Type1 PFB,
+  `gs /SMask`, and the form-field repaint.
 - **M9.1 (worker), M9.2 (ranged loading) and M9.3's page cache are done.** What
   is left of M9 is the **display list** — the record/replay split that makes a
   *new* zoom scale cheap; the cache only covers scales already rendered. That is
@@ -612,8 +616,8 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (76 checks)
-npm run test:e2e      # headless Chrome: 20 steps — both demos, worker mode, rotation, cache, pixel baseline
+npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (79 checks)
+npm run test:e2e      # headless Chrome: 23 steps — both demos, worker mode, rotation, cache, comments, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
 npm run test:ranged   # 117 MB fixture: ranged open, fetch budget, cache budget (10 steps)
 npm run test:ranged4g # sparse 4 GiB fixture: offsets past 2^32, fetch budget, the 4 GiB refusal (6 steps)
@@ -648,7 +652,8 @@ coverage and navigation, hashes each page bitmap, and writes the screenshots in
 ## Layout
 
 ```
-src/cpp/            reader + rasterizer, CFF/Type2, JPEG 2000, annotations, C ABI
+src/cpp/            reader + rasterizer, CFF/Type2, annotations, C ABI
+src/cpp/openjpeg/   vendored OpenJPEG 2.5.4 (JPEG 2000), BSD-2-Clause
 src/cpp/pdfsource.hpp  byte source: whole file in memory, or a slid window
 src/cpp/jbig2gen/   PDFium JBIG2/fax decoder, generated from wasm by wasm2c
 src/js/             loader, PdfDocument, worker + range source, page cache,
@@ -664,8 +669,8 @@ dist/               published output (ESM + wasm)
 ## Licence
 
 MIT for this library. The engine's ~6,500 first-party lines sit on large vendored
-and generated components: PDFium's JBIG2/fax (Apache-2.0), nanopdf's JPEG 2000
-and CFF tables (Apache-2.0), `stb_truetype`/`stb_image` (MIT / public domain),
+and generated components: PDFium's JBIG2/fax (Apache-2.0), OpenJPEG (BSD-2),
+nanopdf's CFF tables (Apache-2.0), `stb_truetype`/`stb_image` (MIT / public domain),
 wabt (BSD-2), `simde` (MIT), Adobe's CMaps (BSD-3), and eight metric-compatible
 font families — DejaVu (Bitstream Vera licence) and Liberation/Carlito/Caladea
 (SIL OFL-1.1, subsetted, so Modified Versions).

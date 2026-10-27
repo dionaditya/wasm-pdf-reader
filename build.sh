@@ -19,7 +19,7 @@ if [ "${1:-}" = "--debug" ]; then MODE="debug"; fi
 OUT_DIR="dist/wasm"
 mkdir -p "$OUT_DIR"
 
-EXPORTS='_wpdf_abi_version,_wpdf_engine_info,_wpdf_last_error,_wpdf_open,_wpdf_open_pw,_wpdf_open_stream,_wpdf_open_windowed,_wpdf_source_stats,_wpdf_close,_wpdf_page_count,_wpdf_page_size,_wpdf_render_page,_wpdf_bitmap_ptr,_wpdf_bitmap_width,_wpdf_bitmap_height,_wpdf_page_text_json,_wpdf_page_stats,_wpdf_info_json,_wpdf_warnings_json,_wpdf_alloc,_wpdf_free,_malloc,_free,_wpdf_page_links_json,_wpdf_outline_json,_wpdf_form_json,_wpdf_set_field'
+EXPORTS='_wpdf_abi_version,_wpdf_engine_info,_wpdf_last_error,_wpdf_open,_wpdf_open_pw,_wpdf_open_stream,_wpdf_open_windowed,_wpdf_source_stats,_wpdf_close,_wpdf_page_count,_wpdf_page_size,_wpdf_render_page,_wpdf_bitmap_ptr,_wpdf_bitmap_width,_wpdf_bitmap_height,_wpdf_page_text_json,_wpdf_page_stats,_wpdf_info_json,_wpdf_warnings_json,_wpdf_alloc,_wpdf_free,_malloc,_free,_wpdf_page_links_json,_wpdf_page_annots_json,_wpdf_outline_json,_wpdf_form_json,_wpdf_set_field'
 RUNTIME='HEAPU8,HEAPU32,UTF8ToString,stringToUTF8,ccall,cwrap,getValue,setValue'
 
 FLAGS=(
@@ -59,6 +59,20 @@ emcc -O2 -I "$JBIG2_DIR" -c "$JBIG2_DIR/wasm-rt-impl.c" -o "$JBIG2_OBJ_DIR/wasmr
   -DWASM_RT_TRAP_HANDLER=pdf_jbig2_trap
 emcc -O2 -I "$JBIG2_DIR" -c "$JBIG2_DIR/wasm-rt-mem-impl.c" -o "$JBIG2_OBJ_DIR/wasmrtmem.o"
 
+# OpenJPEG (vendored under src/cpp/openjpeg/) is C99: em++ would compile .c as
+# C++, where the sources' designated initialisers and implicit void* casts do
+# not build. Compile to objects with emcc, link the objects below. opj_config.h
+# and opj_config_private.h are hand-written (CMake normally generates them).
+OJ_DIR="src/cpp/openjpeg"
+OJ_OBJ_DIR="build/openjpeg"
+mkdir -p "$OJ_OBJ_DIR"
+OJ_OBJS=()
+for src in "$OJ_DIR"/*.c; do
+  obj="$OJ_OBJ_DIR/$(basename "$src" .c).o"
+  emcc -O3 -std=c99 -w -I "$OJ_DIR" -c "$src" -o "$obj"
+  OJ_OBJS+=("$obj")
+done
+
 em++ \
   src/cpp/pdfdoc.cpp \
   src/cpp/jbig2native.cpp \
@@ -72,7 +86,8 @@ em++ \
   src/cpp/cff-parser.cc \
   src/cpp/cmap.cpp \
   src/cpp/cmaps_data.cpp \
-  src/cpp/jpx-decoder.cc \
+  src/cpp/jpxopenjpeg.cpp \
+  "${OJ_OBJS[@]}" \
   "${FLAGS[@]}" \
   -o "$OUT_DIR/pdf-reader.mjs"
 

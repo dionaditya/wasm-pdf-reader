@@ -1,7 +1,7 @@
 #include "jbig2native.hpp"
 #include "pdfdoc.hpp"
 
-#include "jpx-decoder.hh"
+#include "jpxopenjpeg.hpp"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -1505,34 +1505,23 @@ bool Document::decodeJpx(const ObjP& stm, std::vector<uint8_t>& pixels,
     const uint8_t* p = (const uint8_t*)raw.data();
     size_t n = raw.size();
     if (!p || n < 8) { warn("JPX stream too short"); return false; }
-    // A JPEG 2000 file may be a JP2 container; the decoder wants the raw
-    // codestream, which lives in the "jp2c" box (may be preceded by others).
-    if (p[4] == 'j' && p[5] == 'P' && p[6] == ' ' && p[7] == ' ') {
-        size_t off = 0;
-        bool found = false;
-        while (off + 8 <= n) {
-            uint32_t len = ((uint32_t)p[off] << 24) | ((uint32_t)p[off + 1] << 16) |
-                           ((uint32_t)p[off + 2] << 8) | p[off + 3];
-            if (len == 0) len = (uint32_t)(n - off);
-            if (len < 8 || off + len > n) break;
-            if (p[off + 4] == 'j' && p[off + 5] == 'p' && p[off + 6] == '2' && p[off + 7] == 'c') {
-                p += off + 8;
-                n = len - 8;
-                found = true;
-                break;
-            }
-            off += len;
-        }
-        if (!found) { warn("JP2 container without jp2c box"); return false; }
-    }
-    nanopdf::jpx::JPXDecoder dec;
-    nanopdf::jpx::DecodeResult res = dec.decode(p, n);
-    if (!res.success || res.pixels.empty() || res.width == 0 || res.height == 0) {
-        warn("JPX decode failed" + (res.error.empty() ? std::string() : (": " + res.error)));
+
+    // Whole stream, container included: a JP2 file carries colour/ICC boxes the
+    // decoder reads, and a raw codestream starts with SOC (0xFF4F).
+    uint32_t jw = 0, jh = 0;
+    int jc = 0;
+    std::string err;
+    std::vector<uint8_t> pix;
+    if (!nanopdf::jpx::decodeJpx(p, n, pix, jw, jh, jc, err)) {
+        warn("JPX decode failed" + (err.empty() ? std::string() : (": " + err)));
         return false;
     }
-    w = (int)res.width; h = (int)res.height; comps = (int)res.num_components;
-    pixels.swap(res.pixels);
+    if (pix.empty() || jw == 0 || jh == 0 || jc <= 0) {
+        warn("JPX decode produced no pixels");
+        return false;
+    }
+    w = (int)jw; h = (int)jh; comps = jc;
+    pixels.swap(pix);
     return true;
 }
 

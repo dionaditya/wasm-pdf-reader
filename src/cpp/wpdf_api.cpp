@@ -477,6 +477,44 @@ WPDF_EXPORT const char* wpdf_page_links_json(void* handle, int page) {
     return out.c_str();
 }
 
+// ─── annotations (notes, markup, stamps) ────────────────────────────────────
+// One entry per non-link annotation, rectangles in page space (y up):
+//   { sub, x0, y0, x1, y1, contents?, author?, subject?, name?, date?,
+//     color?: [r, g, b], popup?: [x0, y0, x1, y1] }
+// `contents` is the comment a /Text note or markup carries: the renderer paints
+// the icon, but only this list can show what was written.
+WPDF_EXPORT const char* wpdf_page_annots_json(void* handle, int page) {
+    static std::string out;
+    out = "[";
+    DocHandle* h = H(handle);
+    if (h && page >= 0 && page < h->count()) {
+        const std::vector<pdf::Document::Annot>& list = h->doc.annots(page);
+        for (size_t i = 0; i < list.size(); ++i) {
+            const pdf::Document::Annot& a = list[i];
+            if (i) out += ',';
+            out += "{\"sub\":\"" + JsonEscape(a.subtype) + "\"";
+            out += ",\"x0\":" + Num((float)a.x0) + ",\"y0\":" + Num((float)a.y0) +
+                   ",\"x1\":" + Num((float)a.x1) + ",\"y1\":" + Num((float)a.y1);
+            if (!a.contents.empty()) out += ",\"contents\":\"" + JsonEscape(a.contents) + "\"";
+            if (!a.author.empty()) out += ",\"author\":\"" + JsonEscape(a.author) + "\"";
+            if (!a.subject.empty()) out += ",\"subject\":\"" + JsonEscape(a.subject) + "\"";
+            if (!a.name.empty()) out += ",\"name\":\"" + JsonEscape(a.name) + "\"";
+            if (!a.modified.empty()) out += ",\"date\":\"" + JsonEscape(a.modified) + "\"";
+            if (a.hasColor) {
+                out += ",\"color\":[" + Num(a.color[0]) + "," + Num(a.color[1]) + "," +
+                       Num(a.color[2]) + "]";
+            }
+            if (a.hasPopup) {
+                out += ",\"popup\":[" + Num((float)a.px0) + "," + Num((float)a.py0) + "," +
+                       Num((float)a.px1) + "," + Num((float)a.py1) + "]";
+            }
+            out += '}';
+        }
+    }
+    out += ']';
+    return out.c_str();
+}
+
 WPDF_EXPORT void* wpdf_alloc(size_t n) { return malloc(n); }
 WPDF_EXPORT void wpdf_free(void* p) { free(p); }
 
