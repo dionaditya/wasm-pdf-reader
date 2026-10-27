@@ -35,9 +35,9 @@ npm run build:js                # src/js -> dist/, JSX -> JS for React
 node examples/build-react.mjs
 
 # Tests
-node test/unit.mjs              # 72 checks, no browser, ~seconds
-node test/e2e.mjs              # 19 steps in headless Chrome (see §3)
-node test/ranged.mjs           # 8 steps: 117 MB fixture, fetch + cache budgets
+node test/unit.mjs              # 76 checks, no browser, ~seconds
+node test/e2e.mjs              # 20 steps in headless Chrome (see §3)
+node test/ranged.mjs           # 10 steps: 117 MB fixture, fetch + cache budgets
 node --expose-gc test/memory.mjs
 node test/pages.mjs             # builds _site and serves it under /wasm-pdf-reader/
 scripts/verify_encryption.sh    # needs qpdf; diffs derived keys per revision
@@ -120,7 +120,7 @@ chrome Chrome/…
   ok  React text extraction returns the page text
   ok  React metadata lands in the sidebar
 
-18 steps passed
+20 steps passed
 screenshots: docs/screenshots/
 ```
 
@@ -210,7 +210,7 @@ node examples/server.mjs 4444   # http://localhost:4444/ (serves the repo root)
 
 | file | what it is |
 |---|---|
-| `unit.mjs` (~740 lines, 72 checks) | The real contract: opens every fixture, asserts page counts, ink in regions, colours, text, links, encryption, CMaps, OCG, forms, patterns, shadings, JBIG2, memory shape. Add one assertion per feature. |
+| `unit.mjs` (~806 lines, 76 checks) | The real contract: opens every fixture, asserts page counts, ink in regions, colours, text, links, encryption, CMaps, OCG, forms, patterns, shadings, JBIG2, memory shape. Add one assertion per feature. |
 | `e2e.mjs` | Browser suite, §3. Also writes the README screenshots. |
 | `cdp.mjs` | Dependency-free Chrome DevTools Protocol client + launcher. |
 | `pages.mjs` | Builds `_site/` and serves it under `/wasm-pdf-reader/` to catch root-absolute path bugs before Pages does. |
@@ -333,7 +333,7 @@ For `M{N}` in `ROADMAP.md`:
 4. `node test/e2e.mjs` green; refresh `test/baseline/visual.json` only if the
    change is intended, and say so in the commit.
 5. `README.md`: capability bullet + the "not supported" paragraph + the *Limits*
-   section if a ceiling moved. Re-measure counts (`72 checks`, `19 e2e steps`,
+   section if a ceiling moved. Re-measure counts (`76 checks`, `20 e2e steps`, `10 ranged steps`,
    `ls -l dist/wasm/`) — do not copy the previous README, it accumulates stale
    claims.
 6. `ROADMAP.md`: mark the milestone, record what landed and what did not, keep the

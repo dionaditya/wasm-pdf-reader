@@ -1,8 +1,8 @@
 # Roadmap — from "reads most PDFs" to MuPDF-grade output
 
-Last verified: 2026-10-27 (wasm 3.1 MB, 1.9 MB gzipped; 72 unit checks; 19 e2e
-steps; 8 ranged steps). Capability parity against pdf.js 6.4.299 / MuPDF.js
-1.28.1: **76 % / 80 %**
+Last verified: 2026-10-27 (wasm 3.1 MB, 1.9 MB gzipped; 76 unit checks; 20 e2e
+steps; 10 ranged steps; 2 Pages demos). Capability parity against pdf.js 6.4.299 /
+MuPDF.js 1.28.1: **77 % / 81 %**
 weighted, regenerated with `node scripts/competitive-parity.mjs` (the README table
 is that script's output — do not hand-edit it). Working notes for an agent doing
 this work: `CLAUDE.md`.
@@ -32,13 +32,13 @@ fixture that fails today.
 | Type1 PFB | **missing** | substitute face |
 | OCG visibility | done | `ocg.pdf` matches MuPDF exactly |
 | Widgets/forms | done | `form.pdf` at 2.87/255; list boxes paint every option with the selected row highlighted (MuPDF overlaps its rows), buttons get a tick |
-| Outline, thumbnails, print | done | `document.outline` unit check; page rail renders lazily; print rasterizes every page |
+| Outline, thumbnails, print, view rotation | done | `document.outline` unit check; page rail renders lazily; print rasterizes every page; ⟲ / ⟳ swap the page box without re-rendering (e2e) |
 
 Gate for "no visible bug": text pages ≤ 1/255 mean abs diff, scans ≤ 3/255,
 ink ratio within 2 % relative of MuPDF, and a vision check on a zoomed crop.
 0.0 ink against a reference that has ink is always a defect, never a pass.
 
-## Status: M1–M8 done, M9.1 done, M9.2/M9.3 open
+## Status: M1–M8 done, M9.1 + M9.2 done, M9.3 half done (page cache yes, display list no)
 
 All eight feature milestones have landed. What is left of each is **residue, not
 scope**: one decoder, one shading family, three fonts, `/SMask`, form repaint, and
@@ -83,7 +83,7 @@ residues in the order below.
    && node test/e2e.mjs`, then push `main`, rebuild `_site`, push `gh-pages`,
    and sha256-compare the served wasm against local. A deploy is not done until
    the hashes match.
-7. **Budget the wasm.** 3.0 MB today; keep the ceiling at 4 MB. lcms2 (~400 KB)
+7. **Budget the wasm.** 3.1 MB today; keep the ceiling at 4 MB. lcms2 (~400 KB)
    and a full openjpeg port (~1 MB) both fit if nothing else grows.
 
 ## Milestones, in order
@@ -325,6 +325,19 @@ fetched **5.37 MB of 117 MB in 260 range requests**, peak wasm heap **16 MB**
 (acceptance: < 10 MB fetched, < 150 MB heap). A server that ignores `Range` and
 answers 200 is survived by keeping the first full body and slicing it locally.
 
+*Routing (added with the rotation commit)*: the ranged path is no longer opt-in
+when it is the only one that can work. `PdfDocument.open` refuses an inline copy
+above **512 MB** (half the 1 GiB ceiling, because a render needs headroom) before
+growing anything, and routes the source through worker + ranged loading even when
+`{ worker: true }` was not passed. That needs a sliceable source (`File`/`Blob` or
+a URL) — a bare `ArrayBuffer` above the budget still fails with the copy error.
+"Too large to copy" and "the heap could not grow past N MB" are separate errors,
+each naming the real numbers, so a desktop failure no longer reports as a mobile
+memory cap. Measured in Chromium: a **1031 MB** / 240-page file opens ranged in
+**1.8 s**, 8.8 MB fetched, 16 MB heap.
+`close()` also clears the per-worker range fetch hook, or the second big document
+threw and silently fell back to a whole-file copy.
+
 Two things this cost that are worth remembering:
 - **Window granularity is the whole ballgame.** A fixed 1 MB window fetched
   82 MB of the same file, because reading 240 page dicts is 240 random jumps and
@@ -374,10 +387,17 @@ sampling) and patterns (tile scale) each break differently. That is a week of
 work with a strong chance of a subtly wrong fast path, so it is priced and left
 open rather than rushed.
 
-Already landed, and not part of the above: `document.outline`, the page rail's
-lazily rendered thumbnails, `document.metadata`, and a print action that
-rasterizes every page. Probed by e2e ("viewer capability probes return booleans,
-not undefined").
+Already landed, and not part of the above: `document.outline`,
+`document.metadata`, the page rail's lazily rendered thumbnails, a print action
+that rasterizes every page, and **90° view rotation** (⟲ / ⟳ in both toolbars,
+`setRotation` / `rotateLeft` / `rotateRight` / `rotation` on the viewer
+controller, `defaultRotation` and `onRotationChange` in React). Rotation is a
+view transform, not a re-render: the page box swaps for 90°/270° and the layer
+holding canvas + text + links + highlights turns onto it, so overlays stay
+hit-testable and the pixel hashes do not move. The known residue is in *Known
+smaller defects* (a page whose own `/Rotate` is non-zero compounds with a rotated
+view in the text layer). Probed by e2e ("viewer capability probes return booleans,
+not undefined" and "the toolbar turns the view and swaps the page box").
 
 ## Non-goals
 

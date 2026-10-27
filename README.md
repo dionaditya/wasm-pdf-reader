@@ -98,6 +98,13 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
 - **Viewer chrome** — page rail with lazily rendered thumbnails and a print
   action that rasterizes every page at ~120 dpi into a detached sheet, prints it
   and discards it (no print stylesheet can reach into the host page).
+- **View rotation** — ⟲ / ⟳ in both toolbars, `setRotation` / `rotateLeft` /
+  `rotateRight` on the controller and `defaultRotation` on `PdfReader`, in 90°
+  steps on top of each page's own `/Rotate`. The turn is a *view* transform: the
+  page box swaps for 90°/270° and the layer holding canvas, text, links and
+  highlights is rotated onto it, so nothing re-renders and every overlay stays
+  registered. The page element itself stays axis-aligned, because the selection
+  overlay is painted in screen coordinates relative to it.
 - **Text layer** — glyph runs with page-space boxes, so you can select, copy,
   search and draw highlights without a second parser. The viewer mounts a
   transparent `.wpdf-textlayer` over the canvas (each run is a span, stretched
@@ -118,9 +125,16 @@ in [wasm-ui](https://github.com/dionaditya/wasm-ui), packaged here on its own.
   straight out of HTTP `Range` requests or Blob slices, with a 16 KB → 1 MB
   adaptive window. On the 117 MB / 240-page test fixture, opening, drawing page 1,
   page 240 and extracting text pulls **5.4 MB of 117 MB** and keeps the wasm heap
-  at **16 MB**. A server that ignores `Range` is survived by keeping the first
-  full body and slicing it locally. Requires worker mode, because the reads are
-  synchronous — that is the only way a synchronous lexer can page a file in.
+  at **16 MB**; a **1031 MB** / 240-page file opens ranged in **1.8 s** with
+  **8.8 MB** fetched and the same 16 MB heap (a manual Chromium check, not a
+  committed fixture). A server that ignores `Range` is survived by keeping the
+  first full body and slicing it locally. Requires worker
+  mode, because the reads are synchronous — that is the only way a synchronous
+  lexer can page a file in — but a file above the inline copy budget (512 MB) is
+  **routed through worker + ranged loading automatically**, even when
+  `{ worker: true }` was not passed, because no other path can work. That needs a
+  sliceable source (a `File`/`Blob` or a URL); a bare `ArrayBuffer` that large
+  still fails with the "too large to copy" message.
 - **Page cache** — rendered page bitmaps are kept in a byte-budgeted LRU
   (`pageCacheBytes`, default from `navigator.deviceMemory`, `pageCache: false` to
   disable), so returning to a scale already rendered is a bitmap copy rather than
@@ -302,8 +316,9 @@ speed on a specific file — that needs the 30-document pilot described in
   and *non-visual* ones (accessibility 20 %, architecture 85 %).
 - **MuPDF.js loses where pdf.js wins and vice versa.** MuPDF.js has no viewer at
   all (50 % viewer UX, 35 % a11y) but beats everything on decoding and can edit
-  and write. pdf.js still leads on accessibility, a display list and ranged
-  loading; the worker gap closed with M9.1.
+  and write. pdf.js still leads on accessibility and the display list; its
+  architecture edge closed with M9.1 (worker), M9.2 (ranged loading) and M9.3
+  (page cache).
 - **Interop reality:** `mupdf` 1.28.1 is **AGPL-3.0-or-later** (14.3 MB unpacked,
   commercial licence sold separately); `pdfjs-dist` 6.4.299 is Apache-2.0
   (34.9 MB unpacked: several builds, CMaps, standard fonts, two extra wasm
@@ -327,23 +342,23 @@ speed on a specific file — that needs the 30-document pilot described in
 ### Where it is behind, and by how much
 
 Everything left, priced in points of the same weighted score (that is what the
-`+points` column adds to 71.8):
+`+points` column adds to 72.9):
 
 | Remaining item | +points | Result | Effort | Why it matters |
 | --- | ---: | ---: | --- | --- |
-| Display list (M9.3 remainder) | +0.9 | 94% | ~1 week | a new zoom scale still re-interprets the page; the cache only covers scales already rendered |
 | Shadings 1/6/7 and a verified 4/5 | +2.8 | 95% | 3–5 days | gradient-heavy marketing PDFs currently lose their background |
-| Forms: input overlay, `/AP` regeneration, save/flatten | +2.4 | 85% | 1–2 weeks | a filled field under a real producer's `/AP` still looks empty |
+| Forms: input overlay, /AP regeneration, save/flatten | +2.4 | 85% | 1–2 weeks | a filled field under a real producer's /AP still looks empty |
 | Accessibility: tagged structure tree, roles, read order | +2.3 | 65% | 2–3 weeks | the text layer is selectable but not navigable by a screen reader |
 | Ecosystem: publish 0.3.0, docs site, framework examples, CI matrix | +1.8 | 65% | 1 week + ongoing | registry is stale, and there is no fuzzing or disclosure pipeline |
-| Viewer UX: outline panel, zoom presets, gestures | +1.6 | 92% | 1 week | the chrome is the first thing a reviewer compares against pdf.js |
 | ICC for fills via lcms2 | +1.4 | 90% | 3–4 days | print-derived CMYK art is visibly off next to MuPDF |
 | JPEG 2000: vendor openjpeg's j2k decoder | +1.2 | 100% | 3–5 days | the only output that is garbage rather than merely off |
 | Type1 PFB, vertical CMaps, no-shaped-fallback warning | +1.2 | 92% | 4–6 days | legacy TeX output and Japanese vertical text fall back to a substitute face |
+| Viewer UX: outline panel, zoom presets, gestures | +1.1 | 92% | 1 week | the chrome is the first thing a reviewer compares against pdf.js |
+| Display list (M9.3 remainder) | +0.9 | 100% | ~1 week | a new zoom scale re-interprets the page; the cache only covers scales already rendered |
 | Annotations: note panel, multiply highlights, authoring | +0.9 | 90% | 1 week | review workflows stop at "markup renders" |
-| Text structure: lines/blocks, `/ToUnicode` policy, document index | +0.8 | 92% | 3–4 days | every pdf.js consumer expects line/block grouping |
-| Encryption: public-key handler, onPassword retry | +0.3 | 97% | 2–3 days | rare, but a hard fail when a host meets a `/Adobe.PubSec` file |
-| **All of the above** | **+17.4** | **90%** | | **95 % of pdf.js, 100 % of MuPDF.js on this weighting** |
+| Text structure: lines/blocks, /ToUnicode policy, document index | +0.8 | 92% | 3–4 days | every pdf.js consumer expects line/block grouping |
+| Encryption: public-key handler, onPassword retry | +0.3 | 97% | 2–3 days | rare, but a hard fail when a host meets a /Adobe.PubSec file |
+| **All of the above** | **+17.0** | **90%** |  | **95% of pdf.js, 100% of MuPDF.js** |
 
 Two things do not move with any of that: **writing** (editing, redaction,
 signing) and **full accessibility certification**. The first is a declared
@@ -368,9 +383,12 @@ touchpoints, fixtures and acceptance numbers.
   is residue, not scope: full ICC for fills, shadings types 1/6/7, the JPEG 2000
   decoder (OpenJPEG codestreams decode to noise), Type1 PFB, `gs /SMask`, and the
   form-field repaint.
-- **M9 (architecture) is the only open milestone**, and the next thing to do:
-  web worker, ranged loading, display list + byte-budgeted page cache. Its three
-  sub-items have their own acceptance lines in the roadmap.
+- **M9.1 (worker), M9.2 (ranged loading) and M9.3's page cache are done.** What
+  is left of M9 is the **display list** — the record/replay split that makes a
+  *new* zoom scale cheap; the cache only covers scales already rendered. That is
+  the next thing to do, and its acceptance lines are in the roadmap. View
+  rotation, ⟲ / ⟳ and the page rail landed alongside but are viewer chrome, not
+  part of M9.
 - **Non-goals** — shaping, writing, OCR, other input formats — are listed there
   too; they are what keeps this a reader rather than a PDF suite.
 
@@ -521,6 +539,8 @@ PdfDocument.open(source, { wasmUrl, wasmBinary, module, filename, password,
   .search(query, { caseSensitive, limit, pages })    // [{ page, index, length, line, rects }]
   .boxToCss(box, i, scale)         // for overlays
   .pinPage(i, scale, dpr)          // keep this bitmap across cache eviction
+  .rotation                        // view rotation, 0/90/180/270 (viewer controller)
+  .setRotation(deg) / .rotateLeft() / .rotateRight()   // no re-render; a view transform
   .cacheStats                      // { entries, bytes, budget, hits, misses, evictions }
   .sourceStats                     // { fetched, fetches, windowBytes }
   .clearPageCache()
@@ -547,9 +567,17 @@ node examples/server.mjs 4444      # http://localhost:4444/
 
 - `http://localhost:5177/examples/vanilla/`
 - `http://localhost:5177/examples/react/`
+- `http://localhost:5177/examples/ranged/` — opens a 117 MB fixture through
+  `Range` requests and reports the bytes actually read (see below)
 
-The GitHub Pages build (`npm run build:demo` → `_site/`) serves the same demos
-under a sub-path; `.github/workflows/pages.yml` publishes it on every push.
+The port is an argument: `node examples/server.mjs 4444` moves all three (the
+server serves the repo root, so `/test/fixtures/*` works locally but not on the
+published site). The GitHub Pages build (`npm run build:demo` → `_site/`) is
+published from the **`gh-pages` branch**, not by an Actions workflow — the
+workflow that tried the other way was removed because the repository's Pages
+source is the branch. The recipe is in [docs/DEPLOY.md](docs/DEPLOY.md), and the
+published site carries the same three demos under a sub-path, including
+[/ranged/](https://dionaditya.github.io/wasm-pdf-reader/ranged/).
 
 ![Three pages of the generated fixture, rendered by the library](docs/screenshots/pages.png)
 
@@ -571,10 +599,10 @@ npm run build:js      # src/js -> dist/ (ESM, plus JSX -> JS for React)
 ## Tests
 
 ```bash
-npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (72 checks)
-npm run test:e2e      # headless Chrome: 19 steps — both demos, worker mode, cache, pixel baseline
+npm test              # core: parse, raster, text, search, links, annotations, CMaps, encryption (76 checks)
+npm run test:e2e      # headless Chrome: 20 steps — both demos, worker mode, rotation, cache, pixel baseline
 npm run test:pages    # the Pages build under a /wasm-pdf-reader/ base path
-npm run test:ranged   # 117 MB fixture: ranged open, fetch budget, cache budget (8 steps)
+npm run test:ranged   # 117 MB fixture: ranged open, fetch budget, cache budget (10 steps)
 npm run test:memory   # soak the heap: render, reopen, extract; assert it plateaus
 scripts/verify_encryption.sh   # keys vs qpdf for every revision (needs qpdf)
 npm run test:visual   # rewrite the pixel baseline after an intended change

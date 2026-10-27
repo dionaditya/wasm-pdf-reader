@@ -128,7 +128,7 @@ const ITEMS = [
     why: 'print-derived CMYK art is visibly off next to MuPDF',
   },
   {
-    title: 'Viewer UX: outline panel, rotate, zoom presets, gestures',
+    title: 'Viewer UX: outline panel, zoom presets, gestures',
     areas: { viewer: 92 }, effort: '1 week',
     why: 'the chrome is the first thing a reviewer compares against pdf.js',
   },
