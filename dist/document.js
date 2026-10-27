@@ -47,6 +47,11 @@ function heapCeilingBytes(Module) {
 /** Size in bytes of a source we can measure without reading it. */
 function sourceSize(source) {
   if (typeof Blob !== 'undefined' && source instanceof Blob) return source.size;
+  // A range spec ({url, size} / {blob, size}) declares its size; without this
+  // the budget check sees 0 and a failed ranged open falls through to the inline
+  // path, which cannot open a spec at all ("unsupported document source") and
+  // buries the engine's actual error.
+  if (isRangeSpec(source)) return Number(source.size) || 0;
   if (typeof ArrayBuffer !== 'undefined' && (source instanceof ArrayBuffer || ArrayBuffer.isView(source))) {
     return source.byteLength;
   }
@@ -207,7 +212,10 @@ export class PdfDocument {
           const remote = await import('./remote.js');
           return await remote.openRemote(source, options);
         } catch (err) {
-          if (options.worker === 'strict') throw err;
+          // A range spec has no inline path — falling back would replace the
+          // engine's reason (too large, bad xref, wrong password) with
+          // "unsupported document source".
+          if (options.worker === 'strict' || isRangeSpec(source)) throw err;
           workerError = err;           // fall through to the inline path, loudly
         }
       }
@@ -272,6 +280,10 @@ export class PdfDocument {
     }
     if (!handle) {
       const msg = Module.UTF8ToString(Module._wpdf_last_error()) || 'cannot read PDF';
+      // A refused document must not leave the per-worker hook installed, or the
+      // next ranged open fails with "one ranged document per worker" and hides
+      // the real reason (which is the message we are about to throw).
+      clearRangeFetcher();
       throw new Error(`wasm-pdf-reader: ${msg}`);
     }
     const doc = new PdfDocument(Module, handle, null, options);
