@@ -144,22 +144,29 @@ export function usePdfPage(doc, page, options = {}) {
  * Returns a ref callback and a boolean telling you whether to render now.
  */
 export function useInView(options = {}) {
-  const [visible, setVisible] = useState(false);
-  const ref = useRef(null);
-  const observer = useRef(null);
   const { rootMargin = '400px 0px', root = null } = options;
+  const [visible, setVisible] = useState(false);
+  const [node, setNode] = useState(null);
 
-  const setRef = useCallback((node) => {
-    observer.current?.disconnect();
-    ref.current = node;
-    if (!node || typeof IntersectionObserver === 'undefined') { setVisible(true); return; }
-    observer.current = new IntersectionObserver(
+  const setRef = useCallback((el) => { setNode(el); }, []);
+
+  // The observer lives in an effect, not in the ref callback. StrictMode mounts,
+  // unmounts and remounts a component with the same node: the simulated unmount
+  // calls the ref with null and runs effect cleanups, and only the effects are set
+  // up again. An observer built in the ref callback is therefore left disconnected
+  // with nothing to rebuild it, and treating the null call as "no observer" made
+  // `visible` true for every page at once, which turned lazy rendering off
+  // entirely. Keying the effect on the element recreates it on the remount.
+  useEffect(() => {
+    if (!node) return undefined;
+    if (typeof IntersectionObserver === 'undefined') { setVisible(true); return undefined; }
+    const observer = new IntersectionObserver(
       ([entry]) => setVisible(entry.isIntersecting),
       { root, rootMargin },
     );
-    observer.current.observe(node);
-  }, [root, rootMargin]);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [node, root, rootMargin]);
 
-  useEffect(() => () => observer.current?.disconnect(), []);
   return [setRef, visible];
 }

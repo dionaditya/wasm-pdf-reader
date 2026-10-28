@@ -117,24 +117,25 @@ function usePdfPage(doc, page, options = {}) {
   return { canvasRef: setCanvas, ...state, render };
 }
 function useInView(options = {}) {
-  const [visible, setVisible] = useState(false);
-  const ref = useRef(null);
-  const observer = useRef(null);
   const { rootMargin = "400px 0px", root = null } = options;
-  const setRef = useCallback((node) => {
-    observer.current?.disconnect();
-    ref.current = node;
-    if (!node || typeof IntersectionObserver === "undefined") {
+  const [visible, setVisible] = useState(false);
+  const [node, setNode] = useState(null);
+  const setRef = useCallback((el) => {
+    setNode(el);
+  }, []);
+  useEffect(() => {
+    if (!node) return void 0;
+    if (typeof IntersectionObserver === "undefined") {
       setVisible(true);
-      return;
+      return void 0;
     }
-    observer.current = new IntersectionObserver(
+    const observer = new IntersectionObserver(
       ([entry]) => setVisible(entry.isIntersecting),
       { root, rootMargin }
     );
-    observer.current.observe(node);
-  }, [root, rootMargin]);
-  useEffect(() => () => observer.current?.disconnect(), []);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [node, root, rootMargin]);
   return [setRef, visible];
 }
 export {
