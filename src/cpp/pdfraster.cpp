@@ -1930,6 +1930,11 @@ void Interp::drawImage(ObjP io, GState& gs) {
             else if (fam == "Indexed") ncomp = 1;
         }
     }
+    // /N is a plain integer in the file, not a validated enum: a crafted
+    // /ICCBased dict can set it to billions. size_t is 32-bit under wasm, where
+    // iw*ih*ncomp*bpc/8 wraps to a small number, slips past the "image data
+    // short" guard below, and sample() then reads raw[] out of bounds.
+    if (ncomp < 1 || ncomp > 4) ncomp = 3;
     // An /ICCBased image carries the producer's real profile; run it instead of
     // the naive component guess so CMYK and wide-gamut images match the source.
     IccModel icc;
@@ -1964,8 +1969,10 @@ void Interp::drawImage(ObjP io, GState& gs) {
         st->note("image filter (DCT/CCITT/JBIG2)"); return;
     }
 
-    size_t expected = (size_t)iw * ih * ncomp * bpc / 8;
-    if (raw.size() < expected) { st->note("image data short"); return; }
+    // 64-bit on purpose: size_t is 32-bit under wasm, so iw*ih*ncomp*bpc can wrap
+    // to a small value and let a short stream past the guard.
+    uint64_t expected = (uint64_t)iw * ih * ncomp * bpc / 8;
+    if ((uint64_t)raw.size() < expected) { st->note("image data short"); return; }
 
     // /SMask: a grey soft mask where 0 = fully transparent. Without it, logos
     // and signature stamps paint as solid black rectangles. /Mask is the
@@ -1984,7 +1991,7 @@ void Interp::drawImage(ObjP io, GState& gs) {
             // A stencil mask can itself be a JBIG2 scan (common in FaxGroup
             // scans, which carry a JBIG2 /Mask next to the page image).
             bool mok = false;
-            if (mbpc == 1 && mw > 0 && mh > 0) {
+            if (mbpc == 1 && mw > 0 && mh > 0 && mw <= 20000 && mh <= 20000) {
                 if (doc->hasFilter(mk, "JBIG2Decode")) {
                     std::vector<uint8_t> pix;
                     int jw = 0, jh = 0;
@@ -2019,7 +2026,8 @@ void Interp::drawImage(ObjP io, GState& gs) {
             int mbpc = (int)num(doc->resolve(sm->get("BitsPerComponent")), 8);
             mw = (int)num(doc->resolve(sm->get("Width")), 0);
             mh = (int)num(doc->resolve(sm->get("Height")), 0);
-            if (mbpc == 8 && mw > 0 && mh > 0 && doc->decodeStream(sm, mraw) &&
+            if (mbpc == 8 && mw > 0 && mh > 0 && mw <= 20000 && mh <= 20000 &&
+                doc->decodeStream(sm, mraw) &&
                 mraw.size() >= (size_t)mw * mh) {
                 mask.assign((const uint8_t*)mraw.data(), (const uint8_t*)mraw.data() + (size_t)mw * mh);
             } else {
